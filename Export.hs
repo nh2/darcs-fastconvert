@@ -64,9 +64,9 @@ fastExport repodir = withCurrentDirectory repodir $
         plog -> "\n" ++ plog
       realTag p = isTag (info p) && info p `elem` tags && nullFL (effect p)
       author p = case span (/='<') $ piAuthor (info p) of
-                          (name, "") -> name ++ " <unknown>"
-                          (name, rest) -> case span (/='>') $ tail rest of
-                            (email, _) -> name ++ "<" ++ email ++ ">"
+                          (n, "") -> n ++ " <unknown>"
+                          (n, rest) -> case span (/='>') $ tail rest of
+                            (email, _) -> n ++ "<" ++ email ++ ">"
       dumpPatch p n = liftIO $ putStr $ unlines
           [ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
           , "commit refs/heads/master"
@@ -104,6 +104,6 @@ fastExport repodir = withCurrentDirectory repodir $
 optimizedTags :: PatchSet p cS cX -> [PatchInfo]
 optimizedTags (PatchSet _ ts) = go ts
   where go :: RL(Tagged t1) cT cY -> [PatchInfo]
-        go (Tagged t _ _ :<: ts) = info t : go ts
+        go (Tagged t _ _ :<: ts') = info t : go ts'
         go NilRL = []
 
