@@ -10,7 +10,17 @@ Name:                darcs-fastconvert
 Version:             0.1
 
 -- A short (one-line) description of the package.
-Synopsis:            Import and export git fast-import streams to/from darcs.
+Synopsis:            Import/export git fast-import streams to/from darcs.
+
+Description:         The darcs-fastconvert tool allows you to both import
+                     git repositories into darcs (using git fast-export)
+                     and export darcs repositories into git (using git
+                     fast-import). You may also achieve some success with 
+                     3rd-party fast-import/fast-export tools, like
+                     bzr-fastimport although this is not explicitly 
+                     supported or tested. Often, converting from X to git 
+                     and then to darcs works better than direct X to darcs 
+                     conversion using 3rd-party tools.
 
 -- A longer description of the package.
 -- Description:         
@@ -41,8 +51,11 @@ Build-type:          Simple
 -- Extra-source-files:  
 
 -- Constraint on the version of Cabal needed to build this package.
-Cabal-version:       >=1.2
+Cabal-version:       >=1.6
 
+source-repository head
+  type:     darcs
+  location: http://repos.mornfall.net/darcs-fastconvert
 
 Executable darcs-fastconvert
   -- .hs or .lhs file containing the Main module.
@@ -52,7 +65,7 @@ Executable darcs-fastconvert
   Build-depends: hashed-storage >= 0.5.3 && < 0.6,
                  darcs >= 2.4 && < 2.5,
                  cmdlib >= 0.3 && < 0.4,
-                 base >= 4,
+                 base >= 4 && < 5,
                  attoparsec >= 0.8 && < 0.9,
                  datetime, old-time, filepath, bytestring, mtl,
                  directory
