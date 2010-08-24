@@ -1,6 +1,8 @@
-module Import( fastImport ) where
+{-# LANGUAGE DeriveDataTypeable #-}
+module Import( fastImport, RepoFormat(..) ) where
 
 import Prelude hiding ( readFile )
+import Data.Data
 import System.Directory ( setCurrentDirectory, doesDirectoryExist, doesFileExist,
                    createDirectory, createDirectoryIfMissing )
 import Workaround ( getCurrentDirectory )
@@ -16,7 +18,8 @@ import qualified Data.ByteString.Lazy.Char8 as BL
 
 import Darcs.Hopefully ( PatchInfoAnd, n2pia, info, hopefully )
 import Darcs.Commands ( DarcsCommand(..), nodefaults, putInfo, putVerbose )
-import Darcs.Flags( Compression( .. ) )
+import Darcs.Flags( Compression( .. )
+                  , DarcsFlag( UseHashedInventory, UseFormat2 ) )
 import Darcs.Repository ( Repository, withRepoLock, ($-), withRepositoryDirectory, readRepo,
                           readTentativeRepo,
                           createRepository, invalidateIndex,
@@ -73,6 +76,8 @@ import Darcs.Diff( treeDiff )
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Char8( (<?>) )
 
+data RepoFormat = Darcs2Format | HashedFormat deriving (Eq, Data, Typeable)
+
 type Marked = Maybe Int
 type Branch = B.ByteString
 type AuthorInfo = B.ByteString
@@ -104,11 +109,13 @@ instance Show State where
   show (Toplevel _ _) = "Toplevel"
   show (InCommit _ _ _ _ _) = "InCommit"
 
-fastImport :: String -> IO ()
-fastImport outrepo =
+fastImport :: String -> RepoFormat -> IO ()
+fastImport outrepo fmt =
   do createDirectory outrepo
      setCurrentDirectory outrepo
-     createRepository []
+     createRepository $ case fmt of
+       Darcs2Format -> [UseFormat2]
+       HashedFormat -> [UseHashedInventory]
      withRepository [] $- \repo -> do
        fastImport' repo
        finalizeRepositoryChanges repo
