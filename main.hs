@@ -2,7 +2,6 @@
 import Import
 import Export
 import System.Console.CmdLib
-import System.Environment
 
 data Cmd = Import { repo :: String, format :: RepoFormat }
          | Export { repo :: String }
