@@ -2,77 +2,35 @@
 module Export( fastExport ) where
 
 import Prelude hiding ( readFile )
-import System.Directory ( setCurrentDirectory, doesDirectoryExist, doesFileExist,
-                   createDirectory, createDirectoryIfMissing )
-import Workaround ( getCurrentDirectory )
-import Control.Monad ( when, forM_, unless )
-import Control.Applicative ( (<|>) )
-import Control.Monad.Trans ( liftIO )
-import Control.Monad.State.Strict( gets, modify )
-import Control.Exception( finally )
+
 import Data.Maybe ( catMaybes, fromJust )
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
+import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Lazy.Char8 as BL
 
-import Darcs.Hopefully ( PatchInfoAnd, n2pia, info, hopefully )
-import Darcs.Commands ( DarcsCommand(..), nodefaults, putInfo, putVerbose )
-import Darcs.Flags( Compression( .. ) )
-import Darcs.Repository ( Repository, withRepoLock, ($-), withRepositoryDirectory, readRepo,
-                          readTentativeRepo,
-                          createRepository, invalidateIndex,
-                          optimizeInventory,
-                          tentativelyMergePatches, patchSetToPatches,
-                          createPristineDirectoryTree,
-                          revertRepositoryChanges, finalizeRepositoryChanges,
-                          applyToWorking, setScriptsExecutable, withRepository )
-import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ), Cache(..) )
-import Darcs.Repository.HashedRepo ( readHashedPristineRoot, addToTentativeInventory )
+import Control.Monad ( when, forM_ )
+import Control.Monad.Trans ( liftIO )
+import Control.Monad.State.Strict( gets )
+import Control.Exception( finally )
+
+import System.Time ( toClockTime )
+
+import Darcs.Hopefully ( PatchInfoAnd, info )
+import Darcs.Repository ( ($-), readRepo, withRepository )
+import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ) )
+import Darcs.Repository.HashedRepo ( readHashedPristineRoot )
 import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.InternalTypes ( extractCache )
-import Darcs.Repository.Prefs( FileType(..) )
-import Darcs.Global ( darcsdir )
-import Darcs.Patch ( RealPatch, Patch, Named, showPatch, patch2patchinfo, fromPrims, infopatch,
-                     modernizePatch,
-                     adddeps, getdeps, effect, flattenFL, isMerger, patchcontents,
-                     listTouchedFiles, apply, RepoPatch, identity )
-import Darcs.Patch.Depends ( getTagsRight )
-import Darcs.Patch.Prim ( canonizeFL, sortCoalesceFL, Prim )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), EqCheck(..), (=/\=), bunchFL, mapFL, mapFL_FL,
-                                 concatFL, mapRL, lengthFL, nullFL )
-import Darcs.Patch.Info ( piRename, piTag, isTag, PatchInfo, piAuthor, piName, piLog, piDate
-                        , patchinfo )
-import Darcs.Patch.Commute ( publicUnravel )
-import Darcs.Patch.Real ( mergeUnravelled )
-import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2RL, newset2FL )
-import Darcs.RepoPath ( ioAbsoluteOrRemote, toPath )
-import Darcs.Repository.Format(identifyRepoFormat, formatHas, RepoProperty(Darcs2))
-import Darcs.Repository.Motd ( showMotd )
-import Darcs.Utils ( clarifyErrors, askUser, catchall, withCurrentDirectory )
-import Darcs.ProgressPatches ( progressFL )
-import Darcs.Witnesses.Sealed ( FlippedSeal(..), Sealed(..), unFreeLeft, unseal )
-import Printer ( text, ($$) )
-import Darcs.ColorPrinter ( traceDoc )
-import Darcs.Lock ( writeBinFile )
-import Darcs.External
-import System.FilePath.Posix
-import System.Time ( toClockTime )
-import Data.DateTime ( formatDateTime, parseDateTime, fromClockTime, startOfTime )
-import System.IO ( stdin )
+import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
+import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
+import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
+import Darcs.Utils ( withCurrentDirectory )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
-import qualified Storage.Hashed.Monad as TM
-import qualified Storage.Hashed.Tree as T
-import Darcs.IO()
 import Storage.Hashed.Darcs
-import Storage.Hashed.Hash( encodeBase16, sha256, Hash(..) )
-import Storage.Hashed.Tree( emptyTree, listImmediate, findTree, Tree
-                          , treeHash, readBlob, TreeItem(..) )
-import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..), anchorPath, appendPath )
-import Darcs.Diff( treeDiff )
-
-import qualified Data.Attoparsec.Char8 as A
-import Data.Attoparsec.Char8( (<?>) )
+import Storage.Hashed.Tree( emptyTree, listImmediate, findTree )
+import Storage.Hashed.AnchoredPath( anchorPath, appendPath, floatPath
+                                  , AnchoredPath  )
 
 fastExport :: String -> IO ()
 fastExport repodir = withCurrentDirectory repodir $
