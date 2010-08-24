@@ -17,8 +17,6 @@ Synopsis:            Import and export git fast-import streams to/from darcs.
 
 -- The license under which the package is released.
 License:             BSD3
-
--- The file containing the license text.
 License-file:        LICENSE
 
 -- The package author(s).
