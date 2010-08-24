@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module Import( fastImport, RepoFormat(..) ) where
 
-import Prelude hiding ( readFile )
+import Prelude hiding ( readFile, lex, maybe )
 import Data.Data
 import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
@@ -14,16 +14,14 @@ import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import System.Directory ( setCurrentDirectory, doesFileExist, createDirectory )
 import System.IO ( stdin )
-import System.FilePath.Posix
 import System.Time ( toClockTime )
 
-import Darcs.Hopefully ( PatchInfoAnd, n2pia, info, hopefully )
+import Darcs.Hopefully ( n2pia )
 import Darcs.Flags( Compression( .. )
                   , DarcsFlag( UseHashedInventory, UseFormat2 ) )
 import Darcs.Repository ( Repository, withRepoLock, ($-)
                         , readTentativeRepo
                         , createRepository
-                        , optimizeInventory
                         , createPristineDirectoryTree
                         , finalizeRepositoryChanges
                         , cleanRepository )
@@ -32,7 +30,7 @@ import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 
-import Darcs.Patch ( RealPatch, Patch, fromPrims, infopatch, adddeps,identity )
+import Darcs.Patch ( RepoPatch, RealPatch, fromPrims, infopatch, adddeps,identity )
 import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
@@ -84,6 +82,7 @@ data State = Toplevel Marked Branch
 instance Show State where
   show (Toplevel _ _) = "Toplevel"
   show (InCommit _ _ _ _ _) = "InCommit"
+  show Done =  "Done"
 
 fastImport :: String -> RepoFormat -> IO ()
 fastImport outrepo fmt =
@@ -98,10 +97,11 @@ fastImport outrepo fmt =
        cleanRepository repo
        createPristineDirectoryTree repo "." -- this name is really confusing
 
+fastImport' :: (RepoPatch p) => Repository p r u t -> IO ()
 fastImport' repo =
-  do hashedTreeIO (go startstate B.empty) emptyTree "_darcs/pristine.hashed"
+  do hashedTreeIO (go initial B.empty) emptyTree "_darcs/pristine.hashed"
      return ()
-  where startstate = Toplevel Nothing $ BC.pack "refs/branches/master"
+  where initial = Toplevel Nothing $ BC.pack "refs/branches/master"
         go :: State -> B.ByteString -> TreeIO ()
         go state rest = do (rest', item) <- next object rest
                            state' <- process state item
@@ -171,8 +171,10 @@ fastImport' repo =
 
         process (Toplevel n b) (Reset branch from) =
           do case from of
-               (Just (MarkId k)) | Just k == n -> addtag (BC.pack "Anonymous Tagger <> 0 +0000") branch
-               _ -> liftIO $ putStrLn $ "WARNING: Ignoring out-of-order tag " ++ BC.unpack branch
+               (Just (MarkId k)) | Just k == n ->
+                 addtag (BC.pack "Anonymous Tagger <> 0 +0000") branch
+               _ -> liftIO $ putStrLn $ "WARNING: Ignoring out-of-order tag " ++
+                                        BC.unpack branch
              return $ Toplevel n branch
 
         process (Toplevel n b) (Blob (Just m) bits) = do
@@ -183,13 +185,13 @@ fastImport' repo =
           liftIO $ putStrLn $ "WARNING: Ignoring gitlink " ++ BC.unpack link
           return x
 
-        process (Toplevel last pbranch) (Commit branch mark author message) = do
+        process (Toplevel previous pbranch) (Commit branch mark author message) = do
           when (pbranch /= branch) $ do
             liftIO $ putStrLn ("Tagging branch: " ++ BC.unpack pbranch)
             addtag author pbranch
           info <- makeinfo author message False
           startstate <- updateHashes
-          return $ InCommit mark (last, []) branch startstate info
+          return $ InCommit mark (previous, []) branch startstate info
 
         process s@(InCommit _ _ _ _ _) (Modify (Left m) path) = do
           TM.copy (markpath m) (floatPath $ BC.unpack path)
@@ -203,13 +205,13 @@ fastImport' repo =
           TM.unlink (floatPath $ BC.unpack path)
           return s
 
-        process s@(InCommit mark (prev, current) branch start info) (From from) = do
+        process (InCommit mark (prev, current) branch start info) (From from) = do
           return $ InCommit mark (prev, from:current) branch start info
 
-        process s@(InCommit mark (prev, current) branch start info) (Merge from) = do
+        process (InCommit mark (prev, current) branch start info) (Merge from) = do
           return $ InCommit mark (prev, from:current) branch start info
 
-        process s@(InCommit mark ancestors branch start info) x = do
+        process (InCommit mark ancestors branch start info) x = do
           case ancestors of
             (_, []) -> return () -- OK, previous commit is the ancestor
             (Just n, list)
@@ -225,11 +227,12 @@ fastImport' repo =
                 <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
           prims <- return $ fromPrims $ sortCoalesceFL diff
           let patch = infopatch info ((identity :: RealPatch cX cX) :>: prims)
-          liftIO $ addToTentativeInventory (extractCache repo) GzipCompression (n2pia patch)
+          liftIO $ addToTentativeInventory (extractCache repo)
+                                           GzipCompression (n2pia patch)
           process (Toplevel mark branch) x
 
-        process state object = do
-          liftIO $ print object
+        process state obj = do
+          liftIO $ print obj
           fail $ "Unexpected object in state " ++ show state
 
         -- parser follows ------------------------
@@ -279,9 +282,9 @@ fastImport' repo =
                   <|> (lexString "inline" >> return Inline)
                   <|> HashId `fmap` p_hash
         p_data = do lexString "data"
-                    length <- A.decimal
+                    len <- A.decimal
                     A.char '\n'
-                    lex $ A.take length
+                    lex $ A.take len
                   <?> "p_data"
         p_marked = lex $ A.char ':' >> A.decimal
         p_hash = lex $ A.takeWhile1 (A.inClass "0123456789abcdefABCDEF")
