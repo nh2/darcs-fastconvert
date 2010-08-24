@@ -111,8 +111,8 @@ fastImport outrepo =
      createRepository []
      withRepository [] $- \repo -> do
        fastImport' repo
-       cleanRepository repo
        finalizeRepositoryChanges repo
+       cleanRepository repo
        createPristineDirectoryTree repo "." -- this name is really confusing
 
 fastImport' repo =
