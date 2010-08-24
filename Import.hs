@@ -3,74 +3,50 @@ module Import( fastImport, RepoFormat(..) ) where
 
 import Prelude hiding ( readFile )
 import Data.Data
-import System.Directory ( setCurrentDirectory, doesDirectoryExist, doesFileExist,
-                   createDirectory, createDirectoryIfMissing )
-import Workaround ( getCurrentDirectory )
-import Control.Monad ( when, forM_, unless )
-import Control.Applicative ( (<|>) )
-import Control.Monad.Trans ( liftIO )
-import Control.Monad.State.Strict( gets, modify )
-import Control.Exception( finally )
-import Data.Maybe ( catMaybes, fromJust )
+import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy.Char8 as BL
 
-import Darcs.Hopefully ( PatchInfoAnd, n2pia, info, hopefully )
-import Darcs.Commands ( DarcsCommand(..), nodefaults, putInfo, putVerbose )
-import Darcs.Flags( Compression( .. )
-                  , DarcsFlag( UseHashedInventory, UseFormat2 ) )
-import Darcs.Repository ( Repository, withRepoLock, ($-), withRepositoryDirectory, readRepo,
-                          readTentativeRepo,
-                          createRepository, invalidateIndex,
-                          optimizeInventory,
-                          tentativelyMergePatches, patchSetToPatches,
-                          createPristineDirectoryTree,
-                          revertRepositoryChanges, finalizeRepositoryChanges,
-                          applyToWorking, setScriptsExecutable, withRepository,
-                        cleanRepository )
-import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ), Cache(..) )
-import Darcs.Repository.HashedRepo ( readHashedPristineRoot, addToTentativeInventory )
-import Darcs.Repository.HashedIO ( cleanHashdir )
-import Darcs.Repository.InternalTypes ( extractCache )
-import Darcs.Repository.Prefs( FileType(..) )
-import Darcs.Global ( darcsdir )
-import Darcs.Patch ( RealPatch, Patch, Named, showPatch, patch2patchinfo, fromPrims, infopatch,
-                     modernizePatch,
-                     adddeps, getdeps, effect, flattenFL, isMerger, patchcontents,
-                     listTouchedFiles, apply, RepoPatch, identity )
-import Darcs.Patch.Depends ( getTagsRight )
-import Darcs.Patch.Prim ( canonizeFL, sortCoalesceFL, Prim )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), EqCheck(..), (=/\=), bunchFL, mapFL, mapFL_FL,
-                                 concatFL, mapRL, lengthFL, nullFL )
-import Darcs.Patch.Info ( piRename, piTag, isTag, PatchInfo, piAuthor, piName, piLog, piDate
-                        , patchinfo )
-import Darcs.Patch.Commute ( publicUnravel )
-import Darcs.Patch.Real ( mergeUnravelled )
-import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2RL, newset2FL )
-import Darcs.RepoPath ( ioAbsoluteOrRemote, toPath )
-import Darcs.Repository.Format(identifyRepoFormat, formatHas, RepoProperty(Darcs2))
-import Darcs.Repository.Motd ( showMotd )
-import Darcs.Utils ( clarifyErrors, askUser, catchall, withCurrentDirectory )
-import Darcs.ProgressPatches ( progressFL )
-import Darcs.Witnesses.Sealed ( FlippedSeal(..), Sealed(..), unFreeLeft, unseal )
-import Printer ( text, ($$) )
-import Darcs.ColorPrinter ( traceDoc )
-import Darcs.Lock ( writeBinFile )
-import Darcs.External
+import Control.Monad ( when )
+import Control.Applicative ( (<|>) )
+import Control.Monad.Trans ( liftIO )
+import Control.Monad.State.Strict( gets, modify )
+import System.Directory ( setCurrentDirectory, doesFileExist, createDirectory )
+import System.IO ( stdin )
 import System.FilePath.Posix
 import System.Time ( toClockTime )
-import Data.DateTime ( formatDateTime, parseDateTime, fromClockTime, startOfTime )
-import System.IO ( stdin )
+
+import Darcs.Hopefully ( PatchInfoAnd, n2pia, info, hopefully )
+import Darcs.Flags( Compression( .. )
+                  , DarcsFlag( UseHashedInventory, UseFormat2 ) )
+import Darcs.Repository ( Repository, withRepoLock, ($-)
+                        , readTentativeRepo
+                        , createRepository
+                        , optimizeInventory
+                        , createPristineDirectoryTree
+                        , finalizeRepositoryChanges
+                        , cleanRepository )
+
+import Darcs.Repository.HashedRepo ( addToTentativeInventory )
+import Darcs.Repository.InternalTypes ( extractCache )
+import Darcs.Repository.Prefs( FileType(..) )
+
+import Darcs.Patch ( RealPatch, Patch, fromPrims, infopatch, adddeps,identity )
+import Darcs.Patch.Depends ( getTagsRight )
+import Darcs.Patch.Prim ( sortCoalesceFL )
+import Darcs.Patch.Info ( PatchInfo, patchinfo )
+import Darcs.Witnesses.Ordered ( FL(..) )
+import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import qualified Storage.Hashed.Monad as TM
 import qualified Storage.Hashed.Tree as T
 import Storage.Hashed.Darcs
 import Storage.Hashed.Hash( encodeBase16, sha256, Hash(..) )
-import Storage.Hashed.Tree( emptyTree, listImmediate, findTree, Tree
-                          , treeHash, readBlob, TreeItem(..) )
-import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..), anchorPath, appendPath )
+import Storage.Hashed.Tree( emptyTree, Tree, treeHash, readBlob, TreeItem(..) )
+import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
+                                  , appendPath )
 import Darcs.Diff( treeDiff )
 
 import qualified Data.Attoparsec.Char8 as A
@@ -116,7 +92,7 @@ fastImport outrepo fmt =
      createRepository $ case fmt of
        Darcs2Format -> [UseFormat2]
        HashedFormat -> [UseHashedInventory]
-     withRepository [] $- \repo -> do
+     withRepoLock [] $- \repo -> do
        fastImport' repo
        finalizeRepositoryChanges repo
        cleanRepository repo
@@ -151,7 +127,7 @@ fastImport' repo =
 
         addtag author msg =
           do info <- makeinfo author msg True
-             gotany <- liftIO $ doesFileExist $ darcsdir </> "tentative_hashed_pristine"
+             gotany <- liftIO $ doesFileExist "_darcs/tentative_hashed_pristine"
              deps <- if gotany then liftIO $ getTagsRight `fmap` readTentativeRepo repo
                                else return []
              let ident = identity :: FL RealPatch cX cX
@@ -182,7 +158,7 @@ fastImport' repo =
           let root = encodeBase16 $ treeHash tree'
           liftIO $ do
             putStrLn $ "\\o/ It seems we survived. Enjoy your new repo."
-            B.writeFile (darcsdir </> "tentative_pristine") $
+            B.writeFile "_darcs/tentative_pristine" $
               BC.concat [BC.pack "pristine:", root]
           return Done
 
