@@ -51,7 +51,7 @@ Executable darcs-fastconvert
   -- Packages needed in order to build this package.
   Build-depends: hashed-storage >= 0.5.3 && < 0.6,
                  darcs >= 2.4 && < 2.5,
-                 cmdlib >= 0.2.1 && < 0.3,
+                 cmdlib >= 0.3 && < 0.4,
                  base >= 4,
                  attoparsec >= 0.8 && < 0.9,
                  datetime, old-time, filepath, bytestring, mtl,
