@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs, OverloadedStrings #-}
 module Export( fastExport ) where
 
 import Prelude hiding ( readFile )
@@ -6,6 +6,8 @@ import Prelude hiding ( readFile )
 import Data.Maybe ( catMaybes, fromJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as BLC
+import qualified Data.ByteString.Lazy.UTF8 as BLU
 
 import Control.Monad ( when, forM_ )
 import Control.Monad.Trans ( liftIO )
@@ -59,29 +61,29 @@ fastExport repodir = withCurrentDirectory repodir $
         where cleanup bad x | x `elem` bad = '_'
                             | otherwise = x
       date = formatDateTime "%s +0000" . fromClockTime . toClockTime . piDate . info
-      message p = (piName $ info p) ++ case (unlines . piLog $ info p) of
-        "" -> ""
-        plog -> "\n" ++ plog
+      message p = BL.concat [ BLU.fromString (piName $ info p)
+                            , case (unlines . piLog $ info p) of
+                                 "" -> BL.empty
+                                 plog -> BLU.fromString ("\n" ++ plog)]
       realTag p = isTag (info p) && info p `elem` tags && nullFL (effect p)
       author p = case span (/='<') $ piAuthor (info p) of
                           (n, "") -> n ++ " <unknown>"
                           (n, rest) -> case span (/='>') $ tail rest of
                             (email, _) -> n ++ "<" ++ email ++ ">"
-      dumpPatch p n = liftIO $ putStr $ unlines
-          [ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
+      dumpPatch p n = liftIO $ BL.putStr $ BL.intercalate "\n"
+          [ BLU.pack $ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
           , "commit refs/heads/master"
-          , "mark :" ++ show n -- mark the stream
-          , "committer " ++ author p ++ " " ++ date p
-          , "data " ++ show (length $ message p)
+          , BLU.fromString $ "mark :" ++ show n -- mark the stream
+          , BLU.fromString $ "committer " ++ author p ++ " " ++ date p
+          , BLU.fromString $ "data " ++ show (BL.length $ message p)
           , message p ]
-      dumpTag p n = liftIO $ putStr $ unlines
-          [ "progress TAG " ++ tagname p
-          , "tag " ++ tagname p -- FIXME is this valid?
-          -- , "mark :" ++ show n -- no marks for tags?
-          , "from :" ++ show (n - 1) -- the previous mark
-          , "tagger " ++ author p ++ " " ++ date p
-          , "data " ++ show (length (message p) - 4)
-          , drop 4 $ message p ]
+      dumpTag p n = liftIO $ BL.putStr $ BL.intercalate "\n"
+          [ BLU.fromString $ "progress TAG " ++ tagname p
+          , BLU.fromString $ "tag " ++ tagname p -- FIXME is this valid?
+          , BLU.fromString $ "from :" ++ show (n - 1) -- the previous mark
+          , BLU.fromString $ "tagger " ++ author p ++ " " ++ date p
+          , BLU.fromString $ "data " ++ show (BL.length (message p) - 4)
+          , BL.drop 4 $ message p ]
       dump :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) cX cY -> TreeIO ()
       dump _ NilFL = liftIO $ putStrLn "progress (patches converted)"
       dump n (p:>:ps) = do

@@ -69,7 +69,7 @@ Executable darcs-fastconvert
                  base >= 4 && < 5,
                  attoparsec >= 0.8 && < 0.9,
                  datetime, old-time, filepath, bytestring, mtl,
-                 directory
+                 directory, utf8-string
 
   -- Modules not exported by this package.
   -- Other-modules:
