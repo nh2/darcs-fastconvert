@@ -5,7 +5,7 @@ import Prelude hiding ( readFile )
 
 import Data.Maybe ( catMaybes, fromJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
-import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.ByteString.Lazy as BL
 
 import Control.Monad ( when, forM_ )
 import Control.Monad.Trans ( liftIO )
@@ -47,7 +47,7 @@ fastExport repodir = withCurrentDirectory repodir $
         when isfile $ do bits <- readFile file
                          liftIO $ putStrLn $ "M 100644 inline " ++ anchorPath "" file
                          liftIO $ putStrLn $ "data " ++ show (BL.length bits)
-                         liftIO $ putStrLn (BL.unpack bits)
+                         liftIO $ BL.putStr bits
         when isdir $ do tt <- gets tree -- ick
                         let subs = [ file `appendPath` n | (n, _) <-
                                         listImmediate $ fromJust $ findTree tt file ]
