@@ -71,7 +71,7 @@ fastExport repodir = withCurrentDirectory repodir $
                           (n, rest) -> case span (/='>') $ tail rest of
                             (email, _) -> n ++ "<" ++ email ++ ">"
       dumpPatch p n = liftIO $ BL.putStr $ BL.intercalate "\n"
-          [ BLU.pack $ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
+          [ BLC.pack $ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
           , "commit refs/heads/master"
           , BLU.fromString $ "mark :" ++ show n -- mark the stream
           , BLU.fromString $ "committer " ++ author p ++ " " ++ date p
