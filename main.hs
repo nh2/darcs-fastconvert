@@ -17,6 +17,6 @@ instance Attributes Cmd where
 instance RecordCommand Cmd where
   mode_summary Import {} = "Import a git-fast-export dump into darcs."
   mode_summary Export {} = "Export a darcs repository to a git-fast-import stream."
-main = getArgs >>= dispatchR [] >>= \x -> case x of
+main = getArgs >>= dispatchR [] undefined >>= \x -> case x of
   Import {} -> (format x) `seq` fastImport (repo x) (format x) -- XXX hack
   Export {} -> fastExport (repo x)
