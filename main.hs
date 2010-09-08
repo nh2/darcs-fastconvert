@@ -9,10 +9,10 @@ data Cmd = Import { repo :: String, format :: RepoFormat }
 
 instance Attributes Cmd where
   attributes _ = repo %> [ Positional 0 ] %%
-                 format %> [ Help "The format of the repository to create. [default: darcs2]"
+                 format %> [ Help "Repository type to create: darcs-2 (default) or hashed."
                            , Default Darcs2Format ]
   readFlag _ = readCommon <+< readFormat
-    where readFormat "darcs2" = Darcs2Format
+    where readFormat "darcs-2" = Darcs2Format
           readFormat "hashed" = HashedFormat
           readFormat x = error $ "No such repository format " ++ show x
 
