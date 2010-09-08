@@ -57,10 +57,18 @@ source-repository head
   type:     darcs
   location: http://repos.mornfall.net/darcs-fastconvert
 
+flag beta
+  description: use darcs-beta instead of darcs
+
 Executable darcs-fastconvert
   -- .hs or .lhs file containing the Main module.
   Main-is: main.hs
   ghc-options: -Wall -fno-warn-unused-do-bind
+
+  if flag(beta)
+    build-depends: darcs-beta >= 2.4.98.5 && < 2.5
+  else
+    build-depends: darcs >= 2.5 && < 2.6
 
   -- Packages needed in order to build this package.
   Build-depends: hashed-storage >= 0.5.3 && < 0.6,
