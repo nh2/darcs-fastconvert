@@ -8,7 +8,9 @@ data Cmd = Import { repo :: String, format :: RepoFormat }
          deriving (Eq, Typeable, Data)
 
 instance Attributes Cmd where
-  attributes _ = repo %> [ Positional 0 ]
+  attributes _ = repo %> [ Positional 0 ] %%
+                 format %> [ Help "The format of the repository to create. [default: darcs2]"
+                           , Default Darcs2Format ]
   readFlag _ = readCommon <+< readFormat
     where readFormat "darcs2" = Darcs2Format
           readFormat "hashed" = HashedFormat
