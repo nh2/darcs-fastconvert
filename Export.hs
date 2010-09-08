@@ -84,10 +84,10 @@ fastExport repodir = withCurrentDirectory repodir $
           , BLU.fromString $ "tagger " ++ author p ++ " " ++ date p
           , BLU.fromString $ "data " ++ show (BL.length (message p) - 4)
           , BL.drop 4 $ message p ]
-      dump :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) cX cY -> TreeIO ()
+      dump :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) -> TreeIO ()
       dump _ NilFL = liftIO $ putStrLn "progress (patches converted)"
       dump n (p:>:ps) = do
-        apply p
+        apply [] p
         if realTag p && n > 0
            then dumpTag p n
            else do dumpPatch p n
@@ -103,9 +103,9 @@ fastExport repodir = withCurrentDirectory repodir $
   putStrLn "progress done"
   return ()
 
-optimizedTags :: PatchSet p cS cX -> [PatchInfo]
+optimizedTags :: PatchSet p -> [PatchInfo]
 optimizedTags (PatchSet _ ts) = go ts
-  where go :: RL(Tagged t1) cT cY -> [PatchInfo]
+  where go :: RL(Tagged t1) -> [PatchInfo]
         go (Tagged t _ _ :<: ts') = info t : go ts'
         go NilRL = []
 

@@ -97,7 +97,7 @@ fastImport outrepo fmt =
        cleanRepository repo
        createPristineDirectoryTree repo "." -- this name is really confusing
 
-fastImport' :: (RepoPatch p) => Repository p r u t -> IO ()
+fastImport' :: (RepoPatch p) => Repository p -> IO ()
 fastImport' repo =
   do hashedTreeIO (go initial B.empty) emptyTree "_darcs/pristine.hashed"
      return ()
@@ -130,7 +130,7 @@ fastImport' repo =
              gotany <- liftIO $ doesFileExist "_darcs/tentative_hashed_pristine"
              deps <- if gotany then liftIO $ getTagsRight `fmap` readTentativeRepo repo
                                else return []
-             let ident = identity :: FL RealPatch cX cX
+             let ident = identity :: FL RealPatch
                  patch = adddeps (infopatch info ident) deps
              liftIO $ addToTentativeInventory (extractCache repo)
                                               GzipCompression (n2pia patch)
@@ -226,7 +226,7 @@ fastImport' repo =
           Sealed diff
                 <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
           prims <- return $ fromPrims $ sortCoalesceFL diff
-          let patch = infopatch info ((identity :: RealPatch cX cX) :>: prims)
+          let patch = infopatch info ((identity :: RealPatch) :>: prims)
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)
           process (Toplevel mark branch) x
