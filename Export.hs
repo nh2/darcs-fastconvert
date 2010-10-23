@@ -89,10 +89,11 @@ fastExport repodir = withCurrentDirectory repodir $
       dump n (p:>:ps) = do
         apply [] p
         if realTag p && n > 0
-           then dumpTag p n
+           then do dumpTag p n
+                   dump n ps
            else do dumpPatch p n
                    dumpfiles $ map floatPath $ listTouchedFiles p
-        dump (n + 1) ps
+                   dump (n + 1) ps
   putStrLn "reset refs/heads/master"
   hashedTreeIO (dump 1 patches) emptyTree "_darcs/pristine.hashed"
   return ()
