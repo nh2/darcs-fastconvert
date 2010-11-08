@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
-module Import( fastImport, RepoFormat(..) ) where
+module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
 import Prelude hiding ( readFile, lex, maybe )
 import Data.Data
@@ -91,25 +91,21 @@ instance Show State where
   show (InCommit _ _ _ _ _) = "InCommit"
   show Done =  "Done"
 
-fastImport :: String -> RepoFormat -> IO ()
+fastImport :: String -> RepoFormat -> IO Marks
 fastImport outrepo fmt =
   do createDirectory outrepo
-     setCurrentDirectory outrepo
-     createRepository $ case fmt of
-       Darcs2Format -> [UseFormat2]
-       HashedFormat -> [UseHashedInventory]
-     withRepoLock [] $- \repo -> do
-       marks <- fastImport' repo emptyMarks
-       createPristineDirectoryTree repo "." -- this name is really confusing
-       writeMarks ".darcs-marks" marks
+     withCurrentDirectory outrepo $ do
+       createRepository $ case fmt of
+         Darcs2Format -> [UseFormat2]
+         HashedFormat -> [UseHashedInventory]
+       withRepoLock [] $- \repo -> do
+         marks <- fastImport' repo emptyMarks
+         createPristineDirectoryTree repo "." -- this name is really confusing
+         return marks
 
-fastImportIncremental :: String -> IO ()
-fastImportIncremental repodir =
-  withCurrentDirectory repodir $ withRepoLock [] $- \repo -> do
-    marks <- readMarks ".darcs-marks"
-    marks' <- fastImport' repo marks
-    writeMarks ".darcs-marks" marks'
-    return ()
+fastImportIncremental :: String -> Marks -> IO Marks
+fastImportIncremental repodir marks =
+  withCurrentDirectory repodir $ withRepoLock [] $- \repo -> fastImport' repo marks
 
 fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
 fastImport' repo marks = do

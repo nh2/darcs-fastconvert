@@ -104,13 +104,9 @@ dumpPatches tags mark n (p:>:ps) = do
              dumpFiles $ map floatPath $ listTouchedFiles p
   dumpPatches tags mark (next tags n p) ps
 
-fastExport :: String -> IO ()
-fastExport repodir = withCurrentDirectory repodir $
-                     withRepository [] $- \repo -> do
-  marks <- readMarks ".darcs-marks"
-  marks' <- fastExport' repo marks
-  writeMarks ".darcs-marks" marks'
-  return ()
+fastExport :: String -> Marks -> IO Marks
+fastExport repodir marks =
+  withCurrentDirectory repodir $ withRepository [] $- \repo -> fastExport' repo marks
 
 fastExport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
 fastExport' repo marks = do
