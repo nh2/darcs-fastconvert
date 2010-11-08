@@ -98,8 +98,9 @@ fastImport outrepo fmt =
        Darcs2Format -> [UseFormat2]
        HashedFormat -> [UseHashedInventory]
      withRepoLock [] $- \repo -> do
-       fastImport' repo emptyMarks
+       marks <- fastImport' repo emptyMarks
        createPristineDirectoryTree repo "." -- this name is really confusing
+       writeMarks ".darcs-marks" marks
 
 fastImportIncremental :: String -> IO ()
 fastImportIncremental repodir =
@@ -110,15 +111,10 @@ fastImportIncremental repodir =
     return ()
 
 fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
-fastImport' repo marks =
-  do pristine <- readRecorded repo
-     patches <- newset2FL `fmap` readRepo repo
-     check patches (listMarks marks)
-     hashedTreeIO (go initial B.empty) pristine "_darcs/pristine.hashed"
-     finalizeRepositoryChanges repo
-     cleanRepository repo
-     return marks
-  where initial = Toplevel Nothing $ BC.pack "refs/branches/master"
+fastImport' repo marks = do
+    pristine <- readRecorded repo
+    patches <- newset2FL `fmap` readRepo repo
+    let initial = Toplevel Nothing $ BC.pack "refs/branches/master"
 
         check NilFL [] = return ()
         check (p:>:ps) ((k,h):ms) = do
@@ -258,6 +254,12 @@ fastImport' repo marks =
         process state obj = do
           liftIO $ print obj
           fail $ "Unexpected object in state " ++ show state
+
+    check patches (listMarks marks)
+    hashedTreeIO (go initial B.empty) pristine "_darcs/pristine.hashed"
+    finalizeRepositoryChanges repo
+    cleanRepository repo
+    return marks
 
 parseObject = next object
   where object = A.parse p_object
