@@ -130,7 +130,6 @@ fastExport' repo marks = do
                                 (getMark marks n == Just (BSC.pack $ patchHash p))) $
                           die $ "FATAL: Marks do not correspond: expected " ++
                                 (show $ getMark marks n) ++ ", got " ++ patchHash p
-                        liftIO $ hPutStrLn stderr $ "OK: " ++ show n
       check _ NilFL = return (1, NilFL)
       check n allps@(p:>:ps)
         | n <= lastMark marks = do checkOne n p >> check (next tags n p) ps
