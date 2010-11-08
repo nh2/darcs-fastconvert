@@ -20,11 +20,12 @@ import Darcs.Hopefully ( n2pia )
 import Darcs.Flags( Compression( .. )
                   , DarcsFlag( UseHashedInventory, UseFormat2 ) )
 import Darcs.Repository ( Repository, withRepoLock, ($-)
-                        , readTentativeRepo
+                        , readTentativeRepo, readRepo
                         , createRepository
                         , createPristineDirectoryTree
                         , finalizeRepositoryChanges
                         , cleanRepository )
+import Darcs.Repository.State( readRecorded )
 
 import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
@@ -34,6 +35,7 @@ import Darcs.Patch ( RepoPatch, RealPatch, fromPrims, infopatch, adddeps,identit
 import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
+import Darcs.Patch.Set ( newset2FL )
 import Darcs.Witnesses.Ordered ( FL(..) )
 import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
 
@@ -48,6 +50,7 @@ import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
 import Darcs.Diff( treeDiff )
 import Darcs.Utils ( withCurrentDirectory )
 
+import Utils
 import Marks
 
 import qualified Data.Attoparsec.Char8 as A
@@ -108,11 +111,21 @@ fastImportIncremental repodir =
 
 fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
 fastImport' repo marks =
-  do hashedTreeIO (go initial B.empty) emptyTree "_darcs/pristine.hashed"
+  do pristine <- readRecorded repo
+     patches <- newset2FL `fmap` readRepo repo
+     check patches (listMarks marks)
+     hashedTreeIO (go initial B.empty) pristine "_darcs/pristine.hashed"
      finalizeRepositoryChanges repo
      cleanRepository repo
      return marks
   where initial = Toplevel Nothing $ BC.pack "refs/branches/master"
+
+        check NilFL [] = return ()
+        check (p:>:ps) ((k,h):ms) = do
+          when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
+          check ps ms
+        check _ _ = die "FATAL: Patch and mark count do not agree."
+
         go :: State -> B.ByteString -> TreeIO ()
         go state rest = do (rest', item) <- parseObject rest
                            state' <- process state item

@@ -20,7 +20,6 @@ import Control.Exception( finally )
 
 import System.Time ( toClockTime )
 import System.IO ( hPutStrLn, openFile, IOMode(..), stderr )
-import System.Exit
 
 import Darcs.Hopefully ( PatchInfoAnd, info )
 import Darcs.Repository ( Repository, ($-), readRepo, withRepository )
@@ -30,9 +29,10 @@ import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
-import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate, makeFilename )
+import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Utils ( withCurrentDirectory )
+import Utils
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import Storage.Hashed.Darcs
@@ -54,8 +54,6 @@ patchAuthor p = case span (/='<') $ piAuthor (info p) of
   (n, "") -> n ++ " <unknown>"
   (n, rest) -> case span (/='>') $ tail rest of
     (email, _) -> n ++ "<" ++ email ++ ">"
-
-patchHash p = makeFilename (info p)
 
 patchMessage p = BL.concat [ BLU.fromString (piName $ info p)
                            , case (unlines . piLog $ info p) of
@@ -123,13 +121,12 @@ fastExport' repo marks = do
       patches = newset2FL patchset
       tags = optimizedTags patchset
       mark p n = liftIO $ do putStrLn $ "mark :" ++ show n
-                             modifyIORef marksref $ \m -> addMark m n (BSC.pack $ patchHash p)
-      die str = liftIO (hPutStrLn stderr str >> exitWith (ExitFailure 1))
+                             modifyIORef marksref $ \m -> addMark m n (patchHash p)
       checkOne n p = do apply [] p
                         unless (inOrderTag tags p ||
-                                (getMark marks n == Just (BSC.pack $ patchHash p))) $
+                                (getMark marks n == Just (patchHash p))) $
                           die $ "FATAL: Marks do not correspond: expected " ++
-                                (show $ getMark marks n) ++ ", got " ++ patchHash p
+                                (show $ getMark marks n) ++ ", got " ++ (BSC.unpack $ patchHash p)
       check _ NilFL = return (1, NilFL)
       check n allps@(p:>:ps)
         | n <= lastMark marks = do checkOne n p >> check (next tags n p) ps

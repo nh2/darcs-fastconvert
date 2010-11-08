@@ -10,6 +10,7 @@ lastMark m = if M.null m then 0 else fst $ M.findMax m
 
 getMark marks key = M.lookup key marks
 addMark marks key value = M.insert key value marks
+listMarks = M.assocs
 
 readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
@@ -22,5 +23,5 @@ readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
 writeMarks :: FilePath -> Marks -> IO ()
 writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
                      BS.writeFile fp marks
-  where marks = BS.concat $ map format $ M.assocs m
+  where marks = BS.concat $ map format $ listMarks m
         format (k, s) = BS.concat [BS.pack $ show k, BS.pack ": ", s, BS.pack "\n"]
