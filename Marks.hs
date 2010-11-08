@@ -7,6 +7,8 @@ type Marks = M.Map Int BS.ByteString
 emptyMarks = M.empty
 lastMark m = if M.null m then 0 else fst $ M.findMax m
 
+getMark marks key = M.lookup key marks
+
 readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
                  return $ foldl merge M.empty lines

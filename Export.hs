@@ -7,17 +7,19 @@ import Marks
 
 import Data.Maybe ( catMaybes, fromJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 
-import Control.Monad ( when, forM_ )
+import Control.Monad ( when, forM_, unless )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets )
 import Control.Exception( finally )
 
 import System.Time ( toClockTime )
-import System.IO ( hPutStrLn, openFile, IOMode(..) )
+import System.IO ( hPutStrLn, openFile, IOMode(..), stderr )
+import System.Exit
 
 import Darcs.Hopefully ( PatchInfoAnd, info )
 import Darcs.Repository ( ($-), readRepo, withRepository )
@@ -44,8 +46,7 @@ fastExport repodir = withCurrentDirectory repodir $
   putStrLn "progress (reading repository)"
   patchset <- readRepo repo
   marks <- readMarks ".darcs-marks"
-  removeFile ".darcs-marks" `catch` \_ -> return ()
-  markfile <- Just `fmap` openFile ".darcs-marks" WriteMode
+  markfile <- Just `fmap` openFile ".darcs-marks" AppendMode
   let total = show (lengthFL patches)
       patches = newset2FL patchset
       tags = optimizedTags patchset
@@ -90,6 +91,7 @@ fastExport repodir = withCurrentDirectory repodir $
            dumpBits [ BLU.fromString $ "committer " ++ author p ++ " " ++ date p
                     , BLU.fromString $ "data " ++ show (BL.length $ message p)
                     , message p ]
+           when (n > 1) $ dumpBits [ BLU.fromString $ "from :" ++ show (n - 1) ]
       dumpTag p n =
         dumpBits [ BLU.fromString $ "progress TAG " ++ tagname p
                  , BLU.fromString $ "tag " ++ tagname p -- FIXME is this valid?
@@ -102,21 +104,25 @@ fastExport repodir = withCurrentDirectory repodir $
       dump n (p:>:ps) = do
         apply [] p
         if realTag p && n > 0
-           then do dumpTag p n
-                   dump n ps
+           then dumpTag p n
            else do dumpPatch p n
                    dumpfiles $ map floatPath $ listTouchedFiles p
-                   dump (n + 1) ps
+        dump (next n p) ps
+      next n p = if realTag p then n else n + 1
+      die str = liftIO (hPutStrLn stderr str >> exitWith (ExitFailure 1))
+      checkOne n p = do apply [] p
+                        unless (realTag p || (getMark marks n == Just (BSC.pack $ hash p))) $
+                                die $ "FATAL: Marks do not correspond: expected " ++
+                                      (show $ getMark marks n) ++ ", got " ++ hash p
+                        liftIO $ hPutStrLn stderr $ "OK: " ++ show n
       check _ NilFL = return (1, NilFL)
       check n allps@(p:>:ps)
-        | n < lastMark marks = do apply [] p
-                                  if realTag p then check n ps
-                                               else check (n + 1) ps
-        | n == lastMark marks = apply [] p >> return (n, ps)
+        | n <= lastMark marks = do checkOne n p >> check (next n p) ps
+        | n > lastMark marks = return (n, allps)
         | lastMark marks == 0 = return (1, allps)
 
   ((n, patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
-  putStrLn "reset refs/heads/master"
+  -- putStrLn "reset refs/heads/master"
   hashedTreeIO (dump n patches') tree "_darcs/pristine.hashed"
   return ()
  `finally` do
