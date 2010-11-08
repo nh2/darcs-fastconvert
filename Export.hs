@@ -11,6 +11,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.ByteString.Lazy.UTF8 as BLU
+import Data.IORef ( newIORef, modifyIORef, readIORef )
 
 import Control.Monad ( when, forM_, unless )
 import Control.Monad.Trans ( liftIO )
@@ -22,7 +23,7 @@ import System.IO ( hPutStrLn, openFile, IOMode(..), stderr )
 import System.Exit
 
 import Darcs.Hopefully ( PatchInfoAnd, info )
-import Darcs.Repository ( ($-), readRepo, withRepository )
+import Darcs.Repository ( Repository, ($-), readRepo, withRepository )
 import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ) )
 import Darcs.Repository.HashedRepo ( readHashedPristineRoot )
 import Darcs.Repository.HashedIO ( cleanHashdir )
@@ -32,7 +33,6 @@ import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate, makeFilename )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Utils ( withCurrentDirectory )
-import System.Directory( removeFile )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import Storage.Hashed.Darcs
@@ -109,22 +109,27 @@ dumpPatches tags mark n (p:>:ps) = do
 fastExport :: String -> IO ()
 fastExport repodir = withCurrentDirectory repodir $
                      withRepository [] $- \repo -> do
+  marks <- readMarks ".darcs-marks"
+  marks' <- fastExport' repo marks
+  writeMarks ".darcs-marks" marks'
+  return ()
+
+fastExport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
+fastExport' repo marks = do
   putStrLn "progress (reading repository)"
   patchset <- readRepo repo
-  marks <- readMarks ".darcs-marks"
-  markfile <- Just `fmap` openFile ".darcs-marks" AppendMode
+  marksref <- newIORef marks
   let total = show (lengthFL patches)
       patches = newset2FL patchset
       tags = optimizedTags patchset
-      mark p n = do liftIO $ putStrLn $ "mark :" ++ show n -- mark the stream
-                    case markfile of
-                      Nothing -> return ()
-                      Just h -> liftIO $ hPutStrLn h $ show n ++ ": " ++ patchHash p
+      mark p n = liftIO $ do putStrLn $ "mark :" ++ show n
+                             modifyIORef marksref $ \m -> addMark m n (BSC.pack $ patchHash p)
       die str = liftIO (hPutStrLn stderr str >> exitWith (ExitFailure 1))
       checkOne n p = do apply [] p
-                        unless (inOrderTag tags p || (getMark marks n == Just (BSC.pack $ patchHash p))) $
-                                die $ "FATAL: Marks do not correspond: expected " ++
-                                      (show $ getMark marks n) ++ ", got " ++ patchHash p
+                        unless (inOrderTag tags p ||
+                                (getMark marks n == Just (BSC.pack $ patchHash p))) $
+                          die $ "FATAL: Marks do not correspond: expected " ++
+                                (show $ getMark marks n) ++ ", got " ++ patchHash p
                         liftIO $ hPutStrLn stderr $ "OK: " ++ show n
       check _ NilFL = return (1, NilFL)
       check n allps@(p:>:ps)
@@ -134,13 +139,12 @@ fastExport repodir = withCurrentDirectory repodir $
 
   ((n, patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
   hashedTreeIO (dumpPatches tags mark n patches') tree "_darcs/pristine.hashed"
-  return ()
+  readIORef marksref
  `finally` do
   putStrLn "progress (cleaning up)"
   current <- readHashedPristineRoot repo
   cleanHashdir (extractCache repo) HashedPristineDir $ catMaybes [current]
   putStrLn "progress done"
-  return ()
 
 optimizedTags :: PatchSet p -> [PatchInfo]
 optimizedTags (PatchSet _ ts) = go ts
