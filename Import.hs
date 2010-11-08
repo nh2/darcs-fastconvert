@@ -114,7 +114,7 @@ fastImport' repo marks =
      return marks
   where initial = Toplevel Nothing $ BC.pack "refs/branches/master"
         go :: State -> B.ByteString -> TreeIO ()
-        go state rest = do (rest', item) <- next object rest
+        go state rest = do (rest', item) <- parseObject rest
                            state' <- process state item
                            case state' of
                              Done -> return ()
@@ -246,8 +246,8 @@ fastImport' repo marks =
           liftIO $ print obj
           fail $ "Unexpected object in state " ++ show state
 
-        -- parser follows ------------------------
-        object = A.parse p_object
+parseObject = next object
+  where object = A.parse p_object
         lex p = p >>= \x -> A.skipSpace >> return x
         lexString s = A.string (BC.pack s) >> A.skipSpace
         line = lex $ A.takeWhile (/='\n')
