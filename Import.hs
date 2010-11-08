@@ -46,6 +46,9 @@ import Storage.Hashed.Tree( emptyTree, Tree, treeHash, readBlob, TreeItem(..) )
 import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
                                   , appendPath )
 import Darcs.Diff( treeDiff )
+import Darcs.Utils ( withCurrentDirectory )
+
+import Marks
 
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Char8( (<?>) )
@@ -92,15 +95,23 @@ fastImport outrepo fmt =
        Darcs2Format -> [UseFormat2]
        HashedFormat -> [UseHashedInventory]
      withRepoLock [] $- \repo -> do
-       fastImport' repo
-       finalizeRepositoryChanges repo
-       cleanRepository repo
+       fastImport' repo emptyMarks
        createPristineDirectoryTree repo "." -- this name is really confusing
 
-fastImport' :: (RepoPatch p) => Repository p -> IO ()
-fastImport' repo =
+fastImportIncremental :: String -> IO ()
+fastImportIncremental repodir =
+  withCurrentDirectory repodir $ withRepoLock [] $- \repo -> do
+    marks <- readMarks ".darcs-marks"
+    marks' <- fastImport' repo marks
+    writeMarks ".darcs-marks" marks'
+    return ()
+
+fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
+fastImport' repo marks =
   do hashedTreeIO (go initial B.empty) emptyTree "_darcs/pristine.hashed"
-     return ()
+     finalizeRepositoryChanges repo
+     cleanRepository repo
+     return marks
   where initial = Toplevel Nothing $ BC.pack "refs/branches/master"
         go :: State -> B.ByteString -> TreeIO ()
         go state rest = do (rest', item) <- next object rest
