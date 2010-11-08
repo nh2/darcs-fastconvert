@@ -7,6 +7,7 @@ import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy.Char8 as BL
+import Data.IORef ( newIORef, modifyIORef, readIORef )
 
 import Control.Monad ( when )
 import Control.Applicative ( (<|>) )
@@ -114,6 +115,7 @@ fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
 fastImport' repo marks = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
+    marksref <- newIORef marks
     let initial = Toplevel Nothing $ BC.pack "refs/branches/master"
 
         check NilFL [] = return ()
@@ -249,6 +251,11 @@ fastImport' repo marks = do
           let patch = infopatch info ((identity :: RealPatch) :>: prims)
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)
+          case mark of
+            Nothing -> return ()
+            Just n -> case getMark marks n of
+              Nothing -> liftIO $ modifyIORef marksref $ \m -> addMark m n (patchHash $ n2pia patch)
+              Just n' -> die $ "FATAL: Mark already exists: " ++ BC.unpack n'
           process (Toplevel mark branch) x
 
         process state obj = do
@@ -259,7 +266,7 @@ fastImport' repo marks = do
     hashedTreeIO (go initial B.empty) pristine "_darcs/pristine.hashed"
     finalizeRepositoryChanges repo
     cleanRepository repo
-    return marks
+    readIORef marksref
 
 parseObject = next object
   where object = A.parse p_object
