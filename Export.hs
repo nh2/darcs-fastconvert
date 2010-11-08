@@ -3,6 +3,8 @@ module Export( fastExport ) where
 
 import Prelude hiding ( readFile )
 
+import Marks
+
 import Data.Maybe ( catMaybes, fromJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Lazy as BL
@@ -15,6 +17,7 @@ import Control.Monad.State.Strict( gets )
 import Control.Exception( finally )
 
 import System.Time ( toClockTime )
+import System.IO ( hPutStrLn, openFile, IOMode(..) )
 
 import Darcs.Hopefully ( PatchInfoAnd, info )
 import Darcs.Repository ( ($-), readRepo, withRepository )
@@ -24,9 +27,10 @@ import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
-import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
+import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate, makeFilename )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Utils ( withCurrentDirectory )
+import System.Directory( removeFile )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import Storage.Hashed.Darcs
@@ -39,6 +43,9 @@ fastExport repodir = withCurrentDirectory repodir $
                      withRepository [] $- \repo -> do
   putStrLn "progress (reading repository)"
   patchset <- readRepo repo
+  marks <- readMarks ".darcs-marks"
+  removeFile ".darcs-marks" `catch` \_ -> return ()
+  markfile <- Just `fmap` openFile ".darcs-marks" WriteMode
   let total = show (lengthFL patches)
       patches = newset2FL patchset
       tags = optimizedTags patchset
@@ -47,9 +54,9 @@ fastExport repodir = withCurrentDirectory repodir $
         isfile <- fileExists file
         isdir <- directoryExists file
         when isfile $ do bits <- readFile file
-                         liftIO $ putStrLn $ "M 100644 inline " ++ anchorPath "" file
-                         liftIO $ putStrLn $ "data " ++ show (BL.length bits)
-                         liftIO $ BL.putStr bits
+                         dumpBits [ BLU.fromString $ "M 100644 inline " ++ anchorPath "" file
+                                  , BLU.fromString $ "data " ++ show (BL.length bits)
+                                  , bits ]
         when isdir $ do tt <- gets tree -- ick
                         let subs = [ file `appendPath` n | (n, _) <-
                                         listImmediate $ fromJust $ findTree tt file ]
@@ -70,20 +77,26 @@ fastExport repodir = withCurrentDirectory repodir $
                           (n, "") -> n ++ " <unknown>"
                           (n, rest) -> case span (/='>') $ tail rest of
                             (email, _) -> n ++ "<" ++ email ++ ">"
-      dumpPatch p n = liftIO $ BL.putStr $ BL.intercalate "\n"
-          [ BLC.pack $ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
-          , "commit refs/heads/master"
-          , BLU.fromString $ "mark :" ++ show n -- mark the stream
-          , BLU.fromString $ "committer " ++ author p ++ " " ++ date p
-          , BLU.fromString $ "data " ++ show (BL.length $ message p)
-          , message p ]
-      dumpTag p n = liftIO $ BL.putStr $ BL.intercalate "\n"
-          [ BLU.fromString $ "progress TAG " ++ tagname p
-          , BLU.fromString $ "tag " ++ tagname p -- FIXME is this valid?
-          , BLU.fromString $ "from :" ++ show (n - 1) -- the previous mark
-          , BLU.fromString $ "tagger " ++ author p ++ " " ++ date p
-          , BLU.fromString $ "data " ++ show (BL.length (message p) - 4)
-          , BL.drop 4 $ message p ]
+      hash p = makeFilename (info p)
+      dumpBits = liftIO . BL.putStrLn . BL.intercalate "\n"
+      mark p n = do liftIO $ putStrLn $ "mark :" ++ show n -- mark the stream
+                    case markfile of
+                      Nothing -> return ()
+                      Just h -> liftIO $ hPutStrLn h $ show n ++ ": " ++ hash p
+      dumpPatch p n =
+        do dumpBits [ BLC.pack $ "progress " ++ show n ++ " / " ++ total ++ ": " ++ name p
+                    , "commit refs/heads/master" ]
+           mark p n
+           dumpBits [ BLU.fromString $ "committer " ++ author p ++ " " ++ date p
+                    , BLU.fromString $ "data " ++ show (BL.length $ message p)
+                    , message p ]
+      dumpTag p n =
+        dumpBits [ BLU.fromString $ "progress TAG " ++ tagname p
+                 , BLU.fromString $ "tag " ++ tagname p -- FIXME is this valid?
+                 , BLU.fromString $ "from :" ++ show (n - 1) -- the previous mark
+                 , BLU.fromString $ "tagger " ++ author p ++ " " ++ date p
+                 , BLU.fromString $ "data " ++ show (BL.length (message p) - 4)
+                 , BL.drop 4 $ message p ]
       dump :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) -> TreeIO ()
       dump _ NilFL = liftIO $ putStrLn "progress (patches converted)"
       dump n (p:>:ps) = do
@@ -94,8 +107,17 @@ fastExport repodir = withCurrentDirectory repodir $
            else do dumpPatch p n
                    dumpfiles $ map floatPath $ listTouchedFiles p
                    dump (n + 1) ps
+      check _ NilFL = return (1, NilFL)
+      check n allps@(p:>:ps)
+        | n < lastMark marks = do apply [] p
+                                  if realTag p then check n ps
+                                               else check (n + 1) ps
+        | n == lastMark marks = apply [] p >> return (n, ps)
+        | lastMark marks == 0 = return (1, allps)
+
+  ((n, patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
   putStrLn "reset refs/heads/master"
-  hashedTreeIO (dump 1 patches) emptyTree "_darcs/pristine.hashed"
+  hashedTreeIO (dump n patches') tree "_darcs/pristine.hashed"
   return ()
  `finally` do
   putStrLn "progress (cleaning up)"
