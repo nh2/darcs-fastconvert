@@ -43,7 +43,7 @@ handleMarks cmd act = do
        [] -> return ()
        x -> Marks.writeMarks x marks'
 
-main = getArgs >>= dispatchR [] undefined >>= \x -> case x of
+main = getArgs >>= dispatchR [] >>= \x -> case x of
   Import {} | create x && null (readMarks x) -> case readMarks x of
     [] -> (format x) `seq` -- avoid late failure
             handleMarks x (const $ fastImport (repo x) (format x))
