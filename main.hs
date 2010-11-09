@@ -17,11 +17,11 @@ data Cmd = Import { repo :: String
 instance Attributes Cmd where
   attributes _ =
     repo %> [ Positional 0 ] %% group "Options"
-    [ format %> [ Help "repository type to create: darcs-2 (default) or hashed"
-                , Default Darcs2Format ]
-    , create %> [ Help "create a new repository", Default True ]
-    , readMarks %> [ Help "continue conversion, previously checkpointed by --write-marks"
-                   , ArgHelp "FILE" ]
+    [ format     %> [ Help "repository type to create: darcs-2 (default) or hashed"
+                    , Default Darcs2Format ]
+    , create     %> [ Help "create a new repository", Default True ]
+    , readMarks  %> [ Help "continue conversion, previously checkpointed by --write-marks"
+                    , ArgHelp "FILE" ]
     , writeMarks %> [ Help "checkpoint conversion to continue it later"
                     , ArgHelp "FILE" ] ]
 
