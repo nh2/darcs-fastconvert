@@ -50,10 +50,14 @@ tagName = map (cleanup " .") . drop 4 . patchName -- FIXME many more chars are p
 patchName = piName . info
 patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime . piDate . info
 
-patchAuthor p = case span (/='<') $ piAuthor (info p) of
-  (n, "") -> n ++ " <unknown>"
+patchAuthor p = case span (/='<') author of
+  (n, "") -> case span (/='@') $ author of
+                 -- john@home -> john <john@home>
+                 (n, "") -> n ++ " <unknown>"
+                 (name, _) -> name ++ " <" ++ author ++ ">"
   (n, rest) -> case span (/='>') $ tail rest of
     (email, _) -> n ++ "<" ++ email ++ ">"
+ where author = piAuthor (info p)
 
 patchMessage p = BL.concat [ BLU.fromString (piName $ info p)
                            , case (unlines . piLog $ info p) of
