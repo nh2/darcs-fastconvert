@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, OverloadedStrings #-}
+{-# LANGUAGE GADTs, OverloadedStrings, Rank2Types #-}
 module Export( fastExport ) where
 
 import Prelude hiding ( readFile )
@@ -21,14 +21,15 @@ import Control.Exception( finally )
 import System.Time ( toClockTime )
 import System.IO ( hPutStrLn, openFile, IOMode(..), stderr )
 
-import Darcs.Hopefully ( PatchInfoAnd, info )
-import Darcs.Repository ( Repository, ($-), readRepo, withRepository )
+import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info )
+import Darcs.Repository ( Repository, RepoJob(..), readRepo, withRepository )
 import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ) )
 import Darcs.Repository.HashedRepo ( readHashedPristineRoot )
 import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
+import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..) )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Utils ( withCurrentDirectory )
@@ -80,6 +81,7 @@ dumpFiles files = forM_ files $ \file -> do
                   dumpFiles subs
   when (not isfile && not isdir) $ liftIO $ putStrLn $ "D " ++ anchorPath "" file
 
+dumpPatch :: ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int -> TreeIO ()
 dumpPatch mark p n =
   do dumpBits [ BLC.pack $ "progress " ++ show n ++ ": " ++ patchName p
               , "commit refs/heads/master" ]
@@ -97,11 +99,11 @@ dumpTag p n =
            , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) - 4)
            , BL.drop 4 $ patchMessage p ]
 
-dumpPatches :: (RepoPatch p) => [PatchInfo] -> (PatchInfoAnd p -> Int -> TreeIO ())
-               -> Int -> FL (PatchInfoAnd p) -> TreeIO ()
+dumpPatches :: (RepoPatch p) => [PatchInfo] -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
+                 -> Int -> FL (PatchInfoAnd p) x y -> TreeIO ()
 dumpPatches _ _ _ NilFL = liftIO $ putStrLn "progress (patches converted)"
 dumpPatches tags mark n (p:>:ps) = do
-  apply [] p
+  apply p
   if inOrderTag tags p && n > 0
      then dumpTag p n
      else do dumpPatch mark p n
@@ -110,9 +112,9 @@ dumpPatches tags mark n (p:>:ps) = do
 
 fastExport :: String -> Marks -> IO Marks
 fastExport repodir marks =
-  withCurrentDirectory repodir $ withRepository [] $- \repo -> fastExport' repo marks
+  withCurrentDirectory repodir $ withRepository [] $ RepoJob $ \repo -> fastExport' repo marks
 
-fastExport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
+fastExport' :: (RepoPatch p) => Repository p r u r -> Marks -> IO Marks
 fastExport' repo marks = do
   putStrLn "progress (reading repository)"
   patchset <- readRepo repo
@@ -120,20 +122,30 @@ fastExport' repo marks = do
   let total = show (lengthFL patches)
       patches = newset2FL patchset
       tags = optimizedTags patchset
+      mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
       mark p n = liftIO $ do putStrLn $ "mark :" ++ show n
                              modifyIORef marksref $ \m -> addMark m n (patchHash p)
-      checkOne n p = do apply [] p
+      checkOne :: (RepoPatch p) => Int -> (PatchInfoAnd p x y) -> TreeIO ()
+      checkOne n p = do apply p
                         unless (inOrderTag tags p ||
                                 (getMark marks n == Just (patchHash p))) $
                           die $ "FATAL: Marks do not correspond: expected " ++
                                 (show $ getMark marks n) ++ ", got " ++ (BSC.unpack $ patchHash p)
-      check _ NilFL = return (1, NilFL)
-      check n allps@(p:>:ps)
-        | n <= lastMark marks = do checkOne n p >> check (next tags n p) ps
-        | n > lastMark marks = return (n, allps)
-        | lastMark marks == 0 = return (1, allps)
 
-  ((n, patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
+      -- |check drops any patches that have already been exported (as
+      -- determined by the mark-number passed in), first checking they apply
+      -- and their hash correspond to the expected mark. We return a
+      -- FlippedSeal FL, since we may drop some patches from the start of the
+      -- passed-in FL (we also may not drop any), so the caller cannot know the
+      -- returned initial context.
+      check :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) x y -> TreeIO (Int, FlippedSeal (FL (PatchInfoAnd p)) y)
+      check _ NilFL = return (1, flipSeal NilFL)
+      check n allps@(p:>:ps)
+        | n <= lastMark marks = checkOne n p >> check (next tags n p) ps
+        | n > lastMark marks = return (n, flipSeal allps)
+        | lastMark marks == 0 = return (1, flipSeal allps)
+
+  ((n, FlippedSeal patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
   hashedTreeIO (dumpPatches tags mark n patches') tree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
@@ -142,9 +154,9 @@ fastExport' repo marks = do
   cleanHashdir (extractCache repo) HashedPristineDir $ catMaybes [current]
   putStrLn "progress done"
 
-optimizedTags :: PatchSet p -> [PatchInfo]
+optimizedTags :: PatchSet p x y -> [PatchInfo]
 optimizedTags (PatchSet _ ts) = go ts
-  where go :: RL(Tagged t1) -> [PatchInfo]
+  where go :: RL(Tagged t1) x y -> [PatchInfo]
         go (Tagged t _ _ :<: ts') = info t : go ts'
         go NilRL = []
 

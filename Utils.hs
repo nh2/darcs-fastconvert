@@ -2,7 +2,7 @@ module Utils where
 import System.IO ( hPutStrLn, stderr )
 import Control.Monad.Trans ( liftIO )
 import System.Exit
-import Darcs.Hopefully ( info )
+import Darcs.Patch.PatchInfoAnd ( info )
 import Darcs.Patch.Info ( makeFilename )
 import qualified Data.ByteString.Char8 as BSC
 

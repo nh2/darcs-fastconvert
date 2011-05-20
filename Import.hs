@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
 import Prelude hiding ( readFile, lex, maybe )
@@ -10,17 +10,17 @@ import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.IORef ( newIORef, modifyIORef, readIORef )
 
 import Control.Monad ( when )
-import Control.Applicative ( (<|>) )
+import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import System.Directory ( setCurrentDirectory, doesFileExist, createDirectory )
 import System.IO ( stdin )
 import System.Time ( toClockTime )
 
-import Darcs.Hopefully ( n2pia )
+import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
 import Darcs.Flags( Compression( .. )
                   , DarcsFlag( UseHashedInventory, UseFormat2 ) )
-import Darcs.Repository ( Repository, withRepoLock, ($-)
+import Darcs.Repository ( Repository, withRepoLock, RepoJob(..)
                         , readTentativeRepo, readRepo
                         , createRepository
                         , createPristineDirectoryTree
@@ -32,7 +32,9 @@ import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 
-import Darcs.Patch ( RepoPatch, RealPatch, fromPrims, infopatch, adddeps,identity )
+import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps )
+import Darcs.Patch.V2 ( RealPatch )
+import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
@@ -98,22 +100,23 @@ fastImport outrepo fmt =
        createRepository $ case fmt of
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
-       withRepoLock [] $- \repo -> do
+       withRepoLock [] $ RepoJob $ \repo -> do
          marks <- fastImport' repo emptyMarks
          createPristineDirectoryTree repo "." -- this name is really confusing
          return marks
 
 fastImportIncremental :: String -> Marks -> IO Marks
-fastImportIncremental repodir marks =
-  withCurrentDirectory repodir $ withRepoLock [] $- \repo -> fastImport' repo marks
+fastImportIncremental repodir marks = withCurrentDirectory repodir $
+    withRepoLock [] $ RepoJob $ \repo -> fastImport' repo marks
 
-fastImport' :: (RepoPatch p) => Repository p -> Marks -> IO Marks
+fastImport' :: forall p r u . (RepoPatch p) => Repository p r u r -> Marks -> IO Marks
 fastImport' repo marks = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
     let initial = Toplevel Nothing $ BC.pack "refs/branches/master"
 
+        check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
         check NilFL [] = return ()
         check (p:>:ps) ((k,h):ms) = do
           when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
@@ -148,7 +151,7 @@ fastImport' repo marks = do
              gotany <- liftIO $ doesFileExist "_darcs/tentative_hashed_pristine"
              deps <- if gotany then liftIO $ getTagsRight `fmap` readTentativeRepo repo
                                else return []
-             let ident = identity :: FL RealPatch
+             let ident = NilFL :: FL (RealPatch Prim) cX cX
                  patch = adddeps (infopatch info ident) deps
              liftIO $ addToTentativeInventory (extractCache repo)
                                               GzipCompression (n2pia patch)
@@ -243,8 +246,8 @@ fastImport' repo marks = do
           current <- updateHashes
           Sealed diff
                 <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
-          prims <- return $ fromPrims $ sortCoalesceFL diff
-          let patch = infopatch info ((identity :: RealPatch) :>: prims)
+          (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL diff
+          let patch = infopatch info prims
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)
           case mark of
@@ -264,11 +267,15 @@ fastImport' repo marks = do
     cleanRepository repo
     readIORef marksref
 
+parseObject :: BC.ByteString -> TreeIO (BC.ByteString, Object)
 parseObject = next object
   where object = A.parse p_object
+        lex :: A.Parser b -> A.Parser b
         lex p = p >>= \x -> A.skipSpace >> return x
         lexString s = A.string (BC.pack s) >> A.skipSpace
         line = lex $ A.takeWhile (/='\n')
+
+        maybe :: (Alternative f, Monad f) => f a -> f (Maybe a)
         maybe p = Just `fmap` p <|> return Nothing
         p_object = p_blob
                    <|> p_reset
@@ -303,10 +310,14 @@ parseObject = next object
                     mark <- maybe p_mark
                     Blob mark `fmap` p_data
                   <?> "p_blob"
+
+        p_mark :: A.Parser Int
         p_mark = do lexString "mark"
                     lex $ A.char ':'
                     lex A.decimal
                   <?> "p_mark"
+
+        p_refid :: A.Parser RefId
         p_refid = MarkId `fmap` p_marked
                   <|> (lexString "inline" >> return Inline)
                   <|> HashId `fmap` p_hash

@@ -62,14 +62,15 @@ Executable darcs-fastconvert
   Main-is: main.hs
   ghc-options: -Wall -fno-warn-unused-do-bind
 
-  build-depends: darcs >= 2.5 && < 2.6
+  build-depends: darcs >= 2.7 && <= 2.8
 
   -- Packages needed in order to build this package.
   Build-depends: hashed-storage >= 0.5.3 && < 0.6,
                  cmdlib >= 0.3 && < 0.4,
                  base >= 4 && < 5,
                  attoparsec >= 0.8 && < 0.9,
-                 datetime, old-time, filepath, bytestring, mtl,
+                 datetime >= 0.2.1,
+                 old-time, filepath, bytestring, mtl,
                  directory, utf8-string, containers
 
   -- Modules not exported by this package.
