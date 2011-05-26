@@ -19,16 +19,16 @@ import Control.Monad.State.Strict( gets )
 import Control.Exception( finally )
 
 import System.Time ( toClockTime )
-import System.IO ( hPutStrLn, openFile, IOMode(..), stderr )
 
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info )
+import Darcs.Patch.Effect ( Effect )
 import Darcs.Repository ( Repository, RepoJob(..), readRepo, withRepository )
 import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ) )
 import Darcs.Repository.HashedRepo ( readHashedPristineRoot )
 import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), lengthFL, nullFL )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL )
 import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..) )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
@@ -41,18 +41,26 @@ import Storage.Hashed.Tree( emptyTree, listImmediate, findTree )
 import Storage.Hashed.AnchoredPath( anchorPath, appendPath, floatPath
                                   , AnchoredPath  )
 
+inOrderTag :: (Effect p) => [PatchInfo] -> (PatchInfoAnd p) x y -> Bool
 inOrderTag tags p = isTag (info p) && info p `elem` tags && nullFL (effect p)
+
+next :: (Effect p) => [PatchInfo] -> Int -> (PatchInfoAnd p) x y -> Int
 next tags n p = if inOrderTag tags p then n else n + 1
 
+tagName :: (PatchInfoAnd p) x y -> String
 tagName = map (cleanup " .") . drop 4 . patchName -- FIXME many more chars are probably illegal
   where cleanup bad x | x `elem` bad = '_'
                       | otherwise = x
 
+patchName :: (PatchInfoAnd p) x y -> String
 patchName = piName . info
+
+patchDate :: (PatchInfoAnd p) x y -> String
 patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime . piDate . info
 
+patchAuthor :: (PatchInfoAnd p) x y -> String
 patchAuthor p = case span (/='<') author of
-  (n, "") -> case span (/='@') $ author of
+  (_, "") -> case span (/='@') $ author of
                  -- john@home -> john <john@home>
                  (n, "") -> n ++ " <unknown>"
                  (name, _) -> name ++ " <" ++ author ++ ">"
@@ -60,11 +68,13 @@ patchAuthor p = case span (/='<') author of
     (email, _) -> n ++ "<" ++ email ++ ">"
  where author = piAuthor (info p)
 
+patchMessage :: (PatchInfoAnd p) x y -> BLU.ByteString
 patchMessage p = BL.concat [ BLU.fromString (piName $ info p)
                            , case (unlines . piLog $ info p) of
                                 "" -> BL.empty
                                 plog -> BLU.fromString ("\n" ++ plog)]
 
+dumpBits :: [BLU.ByteString] -> TreeIO ()
 dumpBits = liftIO . BL.putStrLn . BL.intercalate "\n"
 
 dumpFiles :: [AnchoredPath] -> TreeIO ()
@@ -91,6 +101,7 @@ dumpPatch mark p n =
               , patchMessage p ]
      when (n > 1) $ dumpBits [ BLU.fromString $ "from :" ++ show (n - 1) ]
 
+dumpTag :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
 dumpTag p n =
   dumpBits [ BLU.fromString $ "progress TAG " ++ tagName p
            , BLU.fromString $ "tag " ++ tagName p -- FIXME is this valid?
@@ -119,8 +130,7 @@ fastExport' repo marks = do
   putStrLn "progress (reading repository)"
   patchset <- readRepo repo
   marksref <- newIORef marks
-  let total = show (lengthFL patches)
-      patches = newset2FL patchset
+  let patches = newset2FL patchset
       tags = optimizedTags patchset
       mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
       mark p n = liftIO $ do putStrLn $ "mark :" ++ show n
@@ -142,11 +152,11 @@ fastExport' repo marks = do
       check _ NilFL = return (1, flipSeal NilFL)
       check n allps@(p:>:ps)
         | n <= lastMark marks = checkOne n p >> check (next tags n p) ps
-        | n > lastMark marks = return (n, flipSeal allps)
         | lastMark marks == 0 = return (1, flipSeal allps)
+        | otherwise = return (n, flipSeal allps)
 
-  ((n, FlippedSeal patches'), tree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
-  hashedTreeIO (dumpPatches tags mark n patches') tree "_darcs/pristine.hashed"
+  ((n, FlippedSeal patches'), newTree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
+  hashedTreeIO (dumpPatches tags mark n patches') newTree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
   putStrLn "progress (cleaning up)"

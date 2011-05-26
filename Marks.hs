@@ -1,15 +1,24 @@
 module Marks where
+import Prelude hiding ( id, lines )
 import qualified Data.IntMap as M
 import qualified Data.ByteString.Char8 as BS
 import System.Directory( removeFile )
 
 type Marks = M.IntMap BS.ByteString
 
+emptyMarks :: Marks
 emptyMarks = M.empty
+
+lastMark :: Marks -> Int
 lastMark m = if M.null m then 0 else fst $ M.findMax m
 
+getMark :: Marks -> M.Key -> Maybe BS.ByteString
 getMark marks key = M.lookup key marks
+
+addMark :: Marks -> M.Key -> BS.ByteString -> Marks
 addMark marks key value = M.insert key value marks
+
+listMarks :: Marks -> [(M.Key, BS.ByteString)]
 listMarks = M.assocs
 
 readMarks :: FilePath -> IO Marks

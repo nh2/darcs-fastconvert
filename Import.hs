@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
-import Prelude hiding ( readFile, lex, maybe )
+import Prelude hiding ( readFile, lex, maybe, log )
 import Data.Data
 import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
@@ -13,9 +13,8 @@ import Control.Monad ( when )
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
-import System.Directory ( setCurrentDirectory, doesFileExist, createDirectory )
+import System.Directory ( doesFileExist, createDirectory )
 import System.IO ( stdin )
-import System.Time ( toClockTime )
 
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
 import Darcs.Flags( Compression( .. )
@@ -47,7 +46,7 @@ import qualified Storage.Hashed.Monad as TM
 import qualified Storage.Hashed.Tree as T
 import Storage.Hashed.Darcs
 import Storage.Hashed.Hash( encodeBase16, sha256, Hash(..) )
-import Storage.Hashed.Tree( emptyTree, Tree, treeHash, readBlob, TreeItem(..) )
+import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..) )
 import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
                                   , appendPath )
 import Darcs.Diff( treeDiff )
@@ -118,7 +117,7 @@ fastImport' repo marks = do
 
         check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
         check NilFL [] = return ()
-        check (p:>:ps) ((k,h):ms) = do
+        check (p:>:ps) ((_,h):ms) = do
           when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
           check ps ms
         check _ _ = die "FATAL: Patch and mark count do not agree."
@@ -190,7 +189,7 @@ fastImport' repo marks = do
                              (head $ lines $ BC.unpack msg)
           return (Toplevel n b)
 
-        process (Toplevel n b) (Reset branch from) =
+        process (Toplevel n _) (Reset branch from) =
           do case from of
                (Just (MarkId k)) | Just k == n ->
                  addtag (BC.pack "Anonymous Tagger <> 0 +0000") branch
@@ -295,7 +294,7 @@ parseObject = next object
         p_commit = do lexString "commit"
                       branch <- line
                       mark <- maybe p_mark
-                      author <- maybe $ p_author "author"
+                      _ <- maybe $ p_author "author"
                       committer <- p_author "committer"
                       message <- p_data
                       return $ Commit branch mark committer message

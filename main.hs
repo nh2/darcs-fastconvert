@@ -34,15 +34,17 @@ instance RecordCommand Cmd where
   mode_summary Import {} = "Import a git-fast-export dump into darcs."
   mode_summary Export {} = "Export a darcs repository to a git-fast-import stream."
 
-handleMarks cmd act = do
-  do marks <- case readMarks cmd of
+handleMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
+handleMarks c act = do
+  do marks <- case readMarks c of
        [] -> return Marks.emptyMarks
        x -> Marks.readMarks x
      marks' <- act marks
-     case writeMarks cmd of
+     case writeMarks c of
        [] -> return ()
        x -> Marks.writeMarks x marks'
 
+main :: IO ()
 main = getArgs >>= dispatchR [] >>= \x -> case x of
   Import {} | create x && null (readMarks x) -> case readMarks x of
     [] -> (format x) `seq` -- avoid late failure
