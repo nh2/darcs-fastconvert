@@ -44,10 +44,15 @@ handleMarks c act = do
        [] -> return ()
        x -> Marks.writeMarks x marks'
 
+handleCmd :: Cmd -> IO ()
+handleCmd c = case c of
+  Import {} | create c -> case readMarks c of
+               [] -> (format c) `seq` -- avoid late failure
+                       handleMarks c (const $ fastImport (repo c) (format c))
+               _  -> die "cannot create repo, with existing marksfile."
+            | otherwise -> handleMarks c $ fastImportIncremental (repo c)
+  Export {} -> handleMarks c $ fastExport (repo c)
+
+
 main :: IO ()
-main = getArgs >>= dispatchR [] >>= \x -> case x of
-  Import {} | create x && null (readMarks x) -> case readMarks x of
-    [] -> (format x) `seq` -- avoid late failure
-            handleMarks x (const $ fastImport (repo x) (format x))
-            | otherwise -> handleMarks x $ fastImportIncremental (repo x)
-  Export {} -> handleMarks x $ fastExport (repo x)
+main = getArgs >>= dispatchR [] >>= handleCmd
