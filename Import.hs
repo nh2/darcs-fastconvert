@@ -100,7 +100,7 @@ fastImport outrepo fmt =
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
-         let initState = Toplevel Nothing $ BC.pack "refs/branches/master"
+         let initState = Toplevel Nothing $ BC.pack "refs/heads/master"
          marks <- fastImport' repo emptyMarks initState
          createPristineDirectoryTree repo "." -- this name is really confusing
          return marks
@@ -113,7 +113,7 @@ fastImportIncremental repodir marks = withCurrentDirectory repodir $
         let ancestor = case lastMark marks of
                 0 -> Nothing
                 n -> Just n
-            initState = Toplevel ancestor $ BC.pack "refs/branches/master"
+            initState = Toplevel ancestor $ BC.pack "refs/heads/master"
         fastImport' repo marks initState
 
 fastImport' :: forall p r u . (RepoPatch p) =>
