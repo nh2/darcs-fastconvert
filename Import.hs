@@ -100,22 +100,29 @@ fastImport outrepo fmt =
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
-         marks <- fastImport' repo emptyMarks
+         let initState = Toplevel Nothing $ BC.pack "refs/branches/master"
+         marks <- fastImport' repo emptyMarks initState
          createPristineDirectoryTree repo "." -- this name is really confusing
          return marks
 
 fastImportIncremental :: String -> Marks -> IO Marks
 fastImportIncremental repodir marks = withCurrentDirectory repodir $
-    withRepoLock [] $ RepoJob $ \repo -> fastImport' repo marks
+    withRepoLock [] $ RepoJob $ \repo -> do
+        -- Read the last mark we processed on a previous import, to prevent non
+        -- linear history errors.
+        let ancestor = case lastMark marks of
+                0 -> Nothing
+                n -> Just n
+            initState = Toplevel ancestor $ BC.pack "refs/branches/master"
+        fastImport' repo marks initState
 
-fastImport' :: forall p r u . (RepoPatch p) => Repository p r u r -> Marks -> IO Marks
-fastImport' repo marks = do
+fastImport' :: forall p r u . (RepoPatch p) =>
+    Repository p r u r -> Marks -> State -> IO Marks
+fastImport' repo marks initial = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
-    let initial = Toplevel Nothing $ BC.pack "refs/branches/master"
-
-        check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
+    let check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
         check NilFL [] = return ()
         check (p:>:ps) ((_,h):ms) = do
           when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
