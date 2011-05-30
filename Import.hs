@@ -200,7 +200,7 @@ fastImport' repo marks initial = do
           do case from of
                (Just (MarkId k)) | Just k == n ->
                  addtag (BC.pack "Anonymous Tagger <> 0 +0000") branch
-               _ -> liftIO $ putStrLn $ "WARNING: Ignoring out-of-order tag " ++
+               _ -> liftIO $ putStrLn $ "WARNING: Ignoring out-of-order reset " ++
                                         BC.unpack branch
              return $ Toplevel n branch
 
