@@ -112,7 +112,7 @@ dumpTag p n =
 
 dumpPatches :: (RepoPatch p) => [PatchInfo] -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
                  -> Int -> FL (PatchInfoAnd p) x y -> TreeIO ()
-dumpPatches _ _ _ NilFL = liftIO $ putStrLn "progress (patches converted)"
+dumpPatches _ _ _ NilFL = return ()
 dumpPatches tags mark n (p:>:ps) = do
   apply p
   if inOrderTag tags p && n > 0
@@ -127,7 +127,6 @@ fastExport repodir marks =
 
 fastExport' :: (RepoPatch p) => Repository p r u r -> Marks -> IO Marks
 fastExport' repo marks = do
-  putStrLn "progress (reading repository)"
   patchset <- readRepo repo
   marksref <- newIORef marks
   let patches = newset2FL patchset
@@ -159,10 +158,8 @@ fastExport' repo marks = do
   hashedTreeIO (dumpPatches tags mark n patches') newTree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
-  putStrLn "progress (cleaning up)"
   current <- readHashedPristineRoot repo
   cleanHashdir (extractCache repo) HashedPristineDir $ catMaybes [current]
-  putStrLn "progress done"
 
 optimizedTags :: PatchSet p x y -> [PatchInfo]
 optimizedTags (PatchSet _ ts) = go ts
