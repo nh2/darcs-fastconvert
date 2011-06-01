@@ -32,7 +32,7 @@ readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
 writeMarks :: FilePath -> Marks -> IO ()
 writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
                      BS.writeFile fp marks
-  where marks = BS.concat $ map format $ listMarks m
+  where marks = BS.concat $ map format $ reverse $ listMarks m
         format (k, s) = BS.concat [BS.pack $ show k, BS.pack ": ", s, BS.pack "\n"]
 
 handleCmdMarks :: FilePath -> FilePath -> (Marks -> IO Marks) -> IO ()
