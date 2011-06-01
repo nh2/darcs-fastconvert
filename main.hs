@@ -34,25 +34,17 @@ instance RecordCommand Cmd where
   mode_summary Import {} = "Import a git-fast-export dump into darcs."
   mode_summary Export {} = "Export a darcs repository to a git-fast-import stream."
 
-handleMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
-handleMarks c act = do
-  do marks <- case readMarks c of
-       [] -> return Marks.emptyMarks
-       x -> Marks.readMarks x
-     marks' <- act marks
-     case writeMarks c of
-       [] -> return ()
-       x -> Marks.writeMarks x marks'
+runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
+runCmdWithMarks c act = Marks.handleCmdMarks (readMarks c) (writeMarks c) act
 
 handleCmd :: Cmd -> IO ()
 handleCmd c = case c of
   Import {} | create c -> case readMarks c of
                [] -> (format c) `seq` -- avoid late failure
-                       handleMarks c (const $ fastImport (repo c) (format c))
+                       runCmdWithMarks c (const $ fastImport (repo c) (format c))
                _  -> die "cannot create repo, with existing marksfile."
-            | otherwise -> handleMarks c $ fastImportIncremental (repo c)
-  Export {} -> handleMarks c $ fastExport (repo c)
-
+            | otherwise -> runCmdWithMarks c $ fastImportIncremental (repo c)
+  Export {} -> runCmdWithMarks c $ fastExport (repo c)
 
 main :: IO ()
 main = getArgs >>= dispatchR [] >>= handleCmd

@@ -34,3 +34,13 @@ writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
                      BS.writeFile fp marks
   where marks = BS.concat $ map format $ listMarks m
         format (k, s) = BS.concat [BS.pack $ show k, BS.pack ": ", s, BS.pack "\n"]
+
+handleCmdMarks :: FilePath -> FilePath -> (Marks -> IO Marks) -> IO ()
+handleCmdMarks inFile outFile act = do
+  do marks <- case inFile of
+       [] -> return emptyMarks
+       x -> readMarks x
+     marks' <- act marks
+     case outFile of
+       [] -> return ()
+       x -> writeMarks x marks'
