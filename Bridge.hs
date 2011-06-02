@@ -1,4 +1,5 @@
-{-# LANGUAGE DeriveDataTypeable #-} module Bridge( createBridge, syncBridge, VCSType(..) ) where
+{-# LANGUAGE DeriveDataTypeable #-}
+module Bridge( createBridge, syncBridge, VCSType(..) ) where
 
 import Utils ( die )
 import Control.Monad ( when, void )

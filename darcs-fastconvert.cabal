@@ -15,15 +15,15 @@ Synopsis:            Import/export git fast-import streams to/from darcs.
 Description:         The darcs-fastconvert tool allows you to both import
                      git repositories into darcs (using git fast-export)
                      and export darcs repositories into git (using git
-                     fast-import). You may also achieve some success with 
+                     fast-import). You may also achieve some success with
                      3rd-party fast-import/fast-export tools, like
-                     bzr-fastimport although this is not explicitly 
-                     supported or tested. Often, converting from X to git 
-                     and then to darcs works better than direct X to darcs 
+                     bzr-fastimport although this is not explicitly
+                     supported or tested. Often, converting from X to git
+                     and then to darcs works better than direct X to darcs
                      conversion using 3rd-party tools.
 
 -- A longer description of the package.
--- Description:         
+-- Description:
 
 -- The license under which the package is released.
 License:             BSD3
@@ -37,7 +37,7 @@ Author:              Petr Rockai <me@mornfall.net>
 Maintainer:          me@mornfall.net
 
 -- A copyright notice.
--- Copyright:           
+-- Copyright:
 
 -- Stability of the pakcage (experimental, provisional, stable...)
 Stability:           Experimental
@@ -48,7 +48,7 @@ Build-type:          Simple
 
 -- Extra files to be distributed with the package, such as examples or
 -- a README.
--- Extra-source-files:  
+-- Extra-source-files:
 
 -- Constraint on the version of Cabal needed to build this package.
 Cabal-version:       >=1.6
