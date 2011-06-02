@@ -71,7 +71,7 @@ Executable darcs-fastconvert
                  attoparsec >= 0.8 && < 0.9,
                  datetime >= 0.2.1,
                  old-time, filepath, bytestring, mtl,
-                 directory, utf8-string, containers, HSH,
+                 directory, utf8-string, containers, process,
                  ConfigFile, MissingH, unix, transformers
 
   -- Modules not exported by this package.

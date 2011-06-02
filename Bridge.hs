@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-} module Bridge( createBridge, syncBridge, VCSType(..) ) where
 
 import Utils ( die )
-import Control.Monad ( when )
+import Control.Monad ( when, void )
 import Control.Monad.Error ( join )
 import Control.Monad.Trans.Error
 import Control.Monad.IO.Class
@@ -9,11 +9,12 @@ import Data.ConfigFile ( emptyCP, set, to_string, readfile, get )
 import Data.Data ( Data, Typeable )
 import Data.Either.Utils ( forceEither )
 import Darcs.Lock ( withLockCanFail )
-import HSH ( runIO, unsetenv )
 import System.Directory ( createDirectory, canonicalizePath, setCurrentDirectory, copyFile, removeFile, renameFile, doesDirectoryExist )
+import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess )
 import System.FilePath ( (</>), takeDirectory, joinPath )
-import System.IO ( hFileSize, withFile, IOMode(ReadMode) )
+import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
+import System.Process ( runCommand, runProcess )
 import System.Posix.Files
 import System.Posix.Types ( FileMode )
 
@@ -109,7 +110,7 @@ createBridge repoPath = do
         return newPath
 
     initTargetRepo' :: VCSType -> FilePath -> IO ()
-    initTargetRepo' Darcs newPath = runIO $ "git init --bare " ++ newPath
+    initTargetRepo' Darcs newPath = void.runCommand $ "git init --bare " ++ newPath
     initTargetRepo' _ newPath = do
         amNotInRepository [WorkRepoDir newPath] -- create repodir
         createRepository [UseFormat2] -- create repo
@@ -268,17 +269,19 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
 
     darcsImport source = do
         let marksPath = makeMarkPath darcsImportMarksName
-            cmd = "darcs-fastconvert import --create=no --write-marks=" ++
-                marksPath ++ " --read-marks=" ++ marksPath ++ " " ++ darcsPath
-                ++ " < " ++ source
-        runIO cmd
+        withFile source ReadMode (\input ->
+            void $ runProcess "darcs-fastconvert"
+                ["import", "--create=no", "--write-marks="++marksPath,
+                "--read-marks="++marksPath, darcsPath]
+                Nothing Nothing (Just input) Nothing Nothing)
 
     darcsExport target = do
         let marksPath = makeMarkPath darcsExportMarksName
-            cmd = "darcs-fastconvert export --write-marks=" ++  marksPath
-                  ++ " --read-marks=" ++ marksPath ++ " " ++ darcsPath ++ " > "
-                  ++ target
-        runIO cmd
+        withFile target WriteMode (\output ->
+            void $ runProcess "darcs-fastconvert"
+                ["export", "--write-marks="++marksPath,
+                 "--read-marks="++marksPath, darcsPath]
+                Nothing Nothing Nothing (Just output) Nothing)
 
     -- This doesn't work, as we can't get stdout/stdin "back" after the
     -- export/import has run. :(
@@ -310,20 +313,25 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
     --         hDuplicateTo h hTarget
     --         handleCmdMarks marksPath marksPath toRun)
 
-    gitExport target = let marksPath = makeMarkPath gitExportMarksName in
-        withCurrentDirectory gitPath $ do
-            putStrLn $ "cwd: " ++ gitPath
-            let cmd = "git fast-export --export-marks=" ++  marksPath
-                      ++ " --import-marks=" ++ marksPath ++ " HEAD > " ++ target
-            runIO cmd
+    gitExport target = do
+        let marksPath = makeMarkPath gitExportMarksName
+        withFile target WriteMode (\output ->
+           void $ runProcess "git"
+                ["fast-export", "--export-marks="++marksPath,
+                 "--import-marks="++marksPath, "HEAD"]
+                (Just gitPath) Nothing Nothing (Just output) Nothing)
 
-    gitImport source = let marksPath = makeMarkPath gitImportMarksName in
-        withCurrentDirectory gitPath  $ do
-            putStrLn $ "cwd: " ++ gitPath
-            let cmd = "git fast-import --quiet --export-marks=" ++  marksPath
-                        ++ " --import-marks=" ++ marksPath ++ " < " ++ source
-            runIO $ unsetenv ["GIT_DIR"] cmd
-
+    gitImport source = do
+        let marksPath = makeMarkPath gitImportMarksName
+        env <- getEnvironment
+        -- Git sets GIT_DIR, preventing git commands from running in any
+        -- other cwd.
+        let unGitEnv = filter (\(k,_) -> k /= "GIT_DIR") env
+        withFile source ReadMode (\input ->
+            void $ runProcess "git"
+                ["fast-import", "--quiet", "--export-marks="++marksPath,
+                 "--import-marks="++marksPath, "HEAD"]
+                (Just gitPath) (Just unGitEnv) (Just input) Nothing Nothing)
 
 -- |createPreHook returns a string containing a shell script that takes a
 -- single argument (the target vcs type) and pulls any changes into that repo.
