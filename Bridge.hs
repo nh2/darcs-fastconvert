@@ -283,36 +283,6 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
                  "--read-marks="++marksPath, darcsPath]
                 Nothing Nothing Nothing (Just output) Nothing)
 
-    -- This doesn't work, as we can't get stdout/stdin "back" after the
-    -- export/import has run. :(
-    --
-    --
-    -- import Marks ( handleCmdMarks )
-    -- import Import ( fastImportIncremental )
-    -- import Export ( fastExport )
-    --
-    -- import GHC.IO.Handle ( hDuplicateTo, hDuplicate )
-    --
-    -- import Control.Exception ( finally )
-    -- import System.IO (IOMode(ReadMode, WriteMode), stdout, stdin)
-    --
-    -- darcsImport source =
-    --     darcsFCCmd source stdin ReadMode darcsImportMarksName $
-    --         fastImportIncremental darcsPath
-
-    -- darcsExport target =
-    --     darcsFCCmd target stdout WriteMode darcsExportMarksName $
-    --         fastExport darcsPath
-
-    -- -- Temporarily redirect the target I/O stream to the file 'source', so that
-    -- -- we can control the input/output location. E.g. output fastExport to a
-    -- -- file, rather than stdout.
-    -- darcsFCCmd source hTarget mode marksFile toRun = do
-    --     let marksPath = makeMarkPath marksFile
-    --     withFile source mode (\h -> do
-    --         hDuplicateTo h hTarget
-    --         handleCmdMarks marksPath marksPath toRun)
-
     gitExport target = do
         let marksPath = makeMarkPath gitExportMarksName
         withFile target WriteMode (\output ->
