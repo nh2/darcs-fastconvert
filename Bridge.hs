@@ -12,10 +12,10 @@ import Data.Either.Utils ( forceEither )
 import Darcs.Lock ( withLockCanFail )
 import System.Directory ( createDirectory, canonicalizePath, setCurrentDirectory, copyFile, removeFile, renameFile, doesDirectoryExist )
 import System.Environment ( getEnvironment )
-import System.Exit ( exitFailure, exitSuccess )
+import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
 import System.FilePath ( (</>), takeDirectory, joinPath )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
-import System.Process ( runCommand, runProcess )
+import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
 
@@ -41,9 +41,9 @@ otherVCS :: VCSType -> VCSType
 otherVCS Darcs = Git
 otherVCS _     = Darcs
 
-data Converter = Converter { exporter :: FilePath -> IO ()
-                           , importer :: FilePath -> IO ()
-                           , markUpdater :: FilePath -> IO ()
+data Converter = Converter { exporter :: FilePath -> IO ProcessHandle
+                           , importer :: FilePath -> IO ProcessHandle
+                           , markUpdater :: FilePath -> IO ProcessHandle
                            , sourceExportMarks :: FilePath
                            , targetExportMarks :: FilePath
                            , sourceImportMarks :: FilePath
@@ -181,22 +181,30 @@ syncBridge' fullBridgePath repoType = do
                 targetMarks = marksFile $ targetExportMarks converter
                 importMarks = marksFile $ sourceImportMarks converter
                 tempImportMarks = bridgeFile "import_marks"
+                tempUpdateMarks = bridgeFile "temp_update_marks"
 
             putStrLn $ "Copying old sourcemarks: " ++ sourceMarks
             copyFile sourceMarks oldSourceMarks
             putStrLn "Doing export."
-            exporter converter exportData
+            exporterProcHandle <- exporter converter exportData
+            exportEC <- waitForProcess exporterProcHandle
+            when (exportEC /= ExitSuccess) (die "Export failed!")
             size <- withFile exportData ReadMode hFileSize
             when (size > 0) (do
                 putStrLn "Doing import."
-                importer converter exportData
+                importerProcHandle <- importer converter exportData
+                importEC <- waitForProcess importerProcHandle
+                when (importEC /= ExitSuccess) (die "Import failed!")
                 putStrLn $ "Copying old targetmarks: " ++ targetMarks
                 -- We need to ensure that the exporting repo knows about the
                 -- mark ids of the just-imported data. We export on the
                 -- just-imported repo, to update the marks file.
                 copyFile targetMarks oldTargetMarks
                 putStrLn "Doing mark update export."
-                markUpdater converter "/dev/null"
+                -- No /dev/null on windows, so output to temp file.
+                updaterProcHandle <- markUpdater converter tempUpdateMarks
+                updaterEC <- waitForProcess updaterProcHandle
+                when (updaterEC /= ExitSuccess) (die "Updater failed!")
                 -- We diff the marks files on both sides, to discover the newly
                 -- added marks. This will allow us to manually update the
                 -- import marks file of the original exporter.
@@ -215,7 +223,8 @@ syncBridge' fullBridgePath repoType = do
                 appendFile tempImportMarks existingImportMarks
                 renameFile tempImportMarks importMarks
                 putStrLn "Import marks updated."
-                mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData]
+                mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
+                    tempUpdateMarks]
 
                 putStrLn "Changes were pulled in via the bridge, update your local repo."
                 -- non-zero exit-code to signal to the VCS that action is
@@ -271,7 +280,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
     darcsImport source = do
         let marksPath = makeMarkPath darcsImportMarksName
         withFile source ReadMode (\input ->
-            void $ runProcess "darcs-fastconvert"
+            runProcess "darcs-fastconvert"
                 ["import", "--create=no", "--write-marks="++marksPath,
                 "--read-marks="++marksPath, darcsPath]
                 Nothing Nothing (Just input) Nothing Nothing)
@@ -279,7 +288,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
     darcsExport target = do
         let marksPath = makeMarkPath darcsExportMarksName
         withFile target WriteMode (\output ->
-            void $ runProcess "darcs-fastconvert"
+            runProcess "darcs-fastconvert"
                 ["export", "--write-marks="++marksPath,
                  "--read-marks="++marksPath, darcsPath]
                 Nothing Nothing Nothing (Just output) Nothing)
@@ -287,7 +296,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
     gitExport target = do
         let marksPath = makeMarkPath gitExportMarksName
         withFile target WriteMode (\output ->
-           void $ runProcess "git"
+           runProcess "git"
                 ["fast-export", "--export-marks="++marksPath,
                  "--import-marks="++marksPath, "-M", "-C", "HEAD"]
                 (Just gitPath) Nothing Nothing (Just output) Nothing)
@@ -299,7 +308,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         -- other cwd.
         let unGitEnv = filter (\(k,_) -> k /= "GIT_DIR") env
         withFile source ReadMode (\input ->
-            void $ runProcess "git"
+            runProcess "git"
                 ["fast-import", "--quiet", "--export-marks="++marksPath,
                  "--import-marks="++marksPath, "HEAD"]
                 (Just gitPath) (Just unGitEnv) (Just input) Nothing Nothing)
