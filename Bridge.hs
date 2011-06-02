@@ -289,7 +289,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         withFile target WriteMode (\output ->
            void $ runProcess "git"
                 ["fast-export", "--export-marks="++marksPath,
-                 "--import-marks="++marksPath, "HEAD"]
+                 "--import-marks="++marksPath, "-M", "-C", "HEAD"]
                 (Just gitPath) Nothing Nothing (Just output) Nothing)
 
     gitImport source = do
