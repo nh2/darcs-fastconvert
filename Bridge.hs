@@ -15,7 +15,7 @@ import System.Exit ( exitFailure, exitSuccess )
 import System.FilePath ( (</>), takeDirectory, joinPath )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
 import System.Process ( runCommand, runProcess )
-import System.Posix.Files
+import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
 
 import Darcs.Repository ( amNotInRepository, createRepository )

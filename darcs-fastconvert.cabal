@@ -80,7 +80,7 @@ Executable darcs-fastconvert
                  process >= 1.0 && < 1.1,
                  ConfigFile >= 1.0 && < 1.1,
                  MissingH >= 1.0 && < 1.2,
-                 unix >= 2.0 && < 2.5,
+                 unix-compat >= 0.1 && < 0.3,
                  transformers >= 0.2 && < 0.3
 
   -- Modules not exported by this package.
