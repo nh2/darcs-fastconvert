@@ -111,7 +111,10 @@ createBridge repoPath = do
         return newPath
 
     initTargetRepo' :: VCSType -> FilePath -> IO ()
-    initTargetRepo' Darcs newPath = void.runCommand $ "git init --bare " ++ newPath
+    initTargetRepo' Darcs newPath = do
+        initProcHandle <- runCommand $ "git init --bare " ++ newPath
+        initEC <- waitForProcess initProcHandle
+        when (initEC /= ExitSuccess) (die "Git init failed!")
     initTargetRepo' _ newPath = do
         amNotInRepository [WorkRepoDir newPath] -- create repodir
         createRepository [UseFormat2] -- create repo
