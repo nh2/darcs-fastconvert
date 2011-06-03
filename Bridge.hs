@@ -313,7 +313,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         withFile source ReadMode (\input ->
             runProcess "git"
                 ["fast-import", "--quiet", "--export-marks="++marksPath,
-                 "--import-marks="++marksPath, "HEAD"]
+                 "--import-marks="++marksPath]
                 (Just gitPath) (Just unGitEnv) (Just input) Nothing Nothing)
 
 -- |createPreHook returns a string containing a shell script that takes a
