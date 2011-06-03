@@ -13,8 +13,9 @@ data Cmd = Import { repo :: String
          | Export { repo :: String
                   , readMarks :: FilePath
                   , writeMarks :: FilePath }
-         | CreateBridge { inputRepo :: String }
-         | Sync   { bridge :: String
+         | CreateBridge { inputRepo :: String
+                        , clone :: Bool}
+         | Sync   { bridgePath :: String
                   , repoType :: VCSType }
          deriving (Eq, Typeable, Data)
 
@@ -28,9 +29,14 @@ instance Attributes Cmd where
                     , ArgHelp "FILE" ]
     , writeMarks %> [ Help "checkpoint conversion to continue it later"
                     , ArgHelp "FILE" ]
-    , inputRepo  %> [ Help "existing repoistory to bridge" ]
-    , repoType  %> [ Help "conversion source repository type: git or darcs"]
-    , bridge     %> [ Help "location of .darcs_bridge folder"] ]
+    , inputRepo  %> [ Help "top-level dir of existing git/darcs repo to bridge"
+                    , ArgHelp "PATH"]
+    , repoType   %> [ Help "conversion source repo type"
+                    , ArgHelp "(git|darcs)"]
+    , bridgePath %> [ Help "directory containing an existing darcs bridge"
+                    , ArgHelp "DIR"]
+    , clone      %> [ Help "clone source repo into dedicated bridge dir"
+                    , Default True] ]
 
   readFlag _ = readCommon <+< readFormat <+< readInputType
     where readFormat "darcs-2" = Darcs2Format
@@ -59,9 +65,9 @@ handleCmd c = case c of
   Export {} -> runCmdWithMarks c $ fastExport (repo c)
   CreateBridge {} -> case inputRepo c of
         [] -> die "missing input-repo argument."
-        r  -> createBridge r
-  Sync {}   -> case bridge c of
-        [] -> die "missing bridge argument."
+        r  -> createBridge r (clone c)
+  Sync {}   -> case bridgePath c of
+        [] -> die "missing bridge-path argument."
         b  -> syncBridge b (repoType c)
 
 main :: IO ()

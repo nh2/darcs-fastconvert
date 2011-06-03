@@ -2,7 +2,7 @@
 module Bridge( createBridge, syncBridge, VCSType(..) ) where
 
 import Utils ( die )
-import Control.Monad ( when, void )
+import Control.Monad ( when )
 import Control.Monad.Error ( join )
 import Control.Monad.Trans.Error
 import Control.Monad.IO.Class
@@ -10,15 +10,18 @@ import Data.ConfigFile ( emptyCP, set, to_string, readfile, get )
 import Data.Data ( Data, Typeable )
 import Data.Either.Utils ( forceEither )
 import Darcs.Lock ( withLockCanFail )
-import System.Directory ( createDirectory, canonicalizePath, setCurrentDirectory, copyFile, removeFile, renameFile, doesDirectoryExist )
+import System.Directory ( createDirectory, canonicalizePath, setCurrentDirectory, getCurrentDirectory, copyFile, removeFile, renameFile, doesDirectoryExist )
 import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
-import System.FilePath ( (</>), takeDirectory, joinPath )
+import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
 import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
 
+import Darcs.Commands ( commandCommand )
+import qualified Darcs.Commands.Get as DCG
+import Darcs.Flags ( DarcsFlag(Quiet) )
 import Darcs.Repository ( amNotInRepository, createRepository )
 import Darcs.Repository.Prefs ( addToPreflist )
 import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2) )
@@ -59,21 +62,21 @@ gitExportMarksName, gitImportMarksName :: String
 gitExportMarksName = "git_export_marks"
 gitImportMarksName = "git_import_marks"
 
--- |createBridge sets up a Darcs bridge. It creates a bridge folder alongside
--- the given repository path, and creates and syncs a clone, using the "other"
--- VCS.
-createBridge :: FilePath -> IO ()
-createBridge repoPath = do
-    fullRepoPath <- canonicalizePath repoPath
-    repoType <- identifyRepoType fullRepoPath
-    putStrLn $ unwords $ ["Identified", show repoType, "repo at", fullRepoPath]
-    targetRepoPath <- initTargetRepo fullRepoPath repoType
-    putStrLn $ unwords ["Initialised target", show $ otherVCS repoType,
-                        "repo at", targetRepoPath]
-    let topLevelDir = takeDirectory fullRepoPath
-        config   = createConfig repoType fullRepoPath targetRepoPath
+-- |createBridge sets up a Darcs bridge. If shouldClone is true, a dedicated
+-- bridge directory is created, and the source repo is cloned into it;
+-- otherwise, the target repository is created alongside the source repo.
+createBridge :: FilePath -> Bool -> IO ()
+createBridge repoPath shouldClone = do
+    fullOrigRepoPath <- canonicalizePath repoPath
+    repoType <- identifyRepoType fullOrigRepoPath
+    putStrLn $ unwords $ ["Identified", show repoType, "repo at", fullOrigRepoPath]
+    (topLevelDir, sourceRepoPath) <- cloneIfNeeded shouldClone repoType fullOrigRepoPath
+    targetRepoPath <- initTargetRepo sourceRepoPath repoType
     setCurrentDirectory topLevelDir
     createDirectory bridgeDirName
+    putStrLn $ unwords ["Initialised target", show $ otherVCS repoType,
+                        "repo at", targetRepoPath]
+    let config   = createConfig repoType sourceRepoPath targetRepoPath
     putStrLn $ "Created " ++ bridgeDirName ++ " in " ++ topLevelDir
     withCurrentDirectory bridgeDirName $ do
         writeFile "config" $ stringifyConfig config
@@ -83,12 +86,36 @@ createBridge repoPath = do
             darcsImportMarksName, gitExportMarksName, gitImportMarksName]
         putStrLn $ "Wrote new marks files."
         let writeSetExec f hook = writeFile f hook >> setFileMode f fullPerms
-        writeSetExec "hook" $ createPreHook (topLevelDir </> bridgeDirName)
+        let bridgeDirPath = topLevelDir </> bridgeDirName
+        writeSetExec "hook" $ createPreHook bridgeDirPath
         putStrLn $ "Wrote hook."
-        setupHooks repoType fullRepoPath targetRepoPath (topLevelDir </> bridgeDirName)
+        setupHooks repoType sourceRepoPath targetRepoPath bridgeDirPath
         putStrLn $ "Wired up hook in both repos. Now syncing from " ++ show repoType
         syncBridge "." (otherVCS repoType)
   where
+    cloneIfNeeded :: Bool -> VCSType -> FilePath -> IO (FilePath, FilePath)
+    cloneIfNeeded False _ path = return $ (takeDirectory path, path)
+    cloneIfNeeded True vcsType origRepoPath = do
+        cwd <- getCurrentDirectory
+        let (_, repoName) = splitFileName origRepoPath
+            topLevelDir = cwd </> repoName ++ "_bridge"
+            clonedRepoPath = topLevelDir </> repoName
+        createDirectory topLevelDir
+        putStrLn $ unwords ["Cloning source repo from", origRepoPath
+                           , "to", clonedRepoPath]
+        cloneRepo vcsType origRepoPath clonedRepoPath
+        return (topLevelDir, clonedRepoPath)
+
+    cloneRepo :: VCSType -> FilePath -> FilePath -> IO ()
+    cloneRepo Darcs old new = do
+        -- This feels like a hack, since getCmd isn't exported.
+        commandCommand DCG.get [Quiet] [old, new]
+    cloneRepo _ old new = do
+        cloneProcHandle <- runProcess
+            "git" ["clone", "-q", old, new] Nothing Nothing Nothing Nothing Nothing
+        cloneEC <- waitForProcess cloneProcHandle
+        when (cloneEC /= ExitSuccess) (die "Git clone failed!")
+
     identifyRepoType :: FilePath -> IO VCSType
     identifyRepoType path = do
         let searchDirs = [(["_darcs"], Darcs),
@@ -104,6 +131,7 @@ createBridge repoPath = do
         identifyRepoType' p ((paths, vcsType):fs) = do
             exists <- mapM (doesDirectoryExist.(p </>)) paths
             if and exists then return (Just vcsType) else identifyRepoType' p fs
+
     initTargetRepo :: FilePath -> VCSType -> IO FilePath
     initTargetRepo fullRepoPath repoType = do
         let newPath = fullRepoPath ++ "_" ++ (show $ otherVCS repoType)
@@ -112,7 +140,7 @@ createBridge repoPath = do
 
     initTargetRepo' :: VCSType -> FilePath -> IO ()
     initTargetRepo' Darcs newPath = do
-        initProcHandle <- runCommand $ "git init --bare " ++ newPath
+        initProcHandle <- runCommand $ "git init -q --bare " ++ newPath
         initEC <- waitForProcess initProcHandle
         when (initEC /= ExitSuccess) (die "Git init failed!")
     initTargetRepo' _ newPath = do
