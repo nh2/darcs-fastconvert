@@ -185,6 +185,7 @@ fastImport' repo marks initial = do
           Sealed diff
                 <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
           return $ InCommit mark ancestors branch current ((reverseFL diff) +<+ ps) info
+        diffCurrent _ = error "This is never valid outside of a commit."
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
