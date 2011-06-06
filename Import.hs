@@ -31,14 +31,15 @@ import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 
-import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps )
+import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Patch.Prim.V1 ( Prim )
+import Darcs.Patch.Prim.Class ( PrimOf )
 import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.Set ( newset2FL )
-import Darcs.Witnesses.Ordered ( FL(..) )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL)
 import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
@@ -83,13 +84,14 @@ data Object = Blob (Maybe Int) Content
             deriving Show
 
 type Ancestors = (Marked, [Int])
-data State = Toplevel Marked Branch
-           | InCommit Marked Ancestors Branch (Tree IO) PatchInfo
-           | Done
+data State p where
+    Toplevel :: Marked -> Branch -> State p
+    InCommit :: Marked -> Ancestors -> Branch -> (Tree IO) -> (RL (PrimOf p) cX cY) -> PatchInfo -> State p
+    Done :: State p
 
-instance Show State where
+instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
-  show (InCommit _ _ _ _ _) = "InCommit"
+  show (InCommit _ _ _ _ _ _) = "InCommit"
   show Done =  "Done"
 
 fastImport :: String -> RepoFormat -> IO Marks
@@ -117,7 +119,7 @@ fastImportIncremental repodir marks = withCurrentDirectory repodir $
         fastImport' repo marks initState
 
 fastImport' :: forall p r u . (RepoPatch p) =>
-    Repository p r u r -> Marks -> State -> IO Marks
+    Repository p r u r -> Marks -> State p -> IO Marks
 fastImport' repo marks initial = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
@@ -129,7 +131,7 @@ fastImport' repo marks initial = do
           check ps ms
         check _ _ = die "FATAL: Patch and mark count do not agree."
 
-        go :: State -> B.ByteString -> TreeIO ()
+        go :: State p -> B.ByteString -> TreeIO ()
         go state rest = do (rest', item) <- parseObject rest
                            state' <- process state item
                            case state' of
@@ -174,7 +176,13 @@ fastImport' repo marks initial = do
           modify $ \s -> s { tree = tree' }
           return $ T.filter nodarcs tree'
 
-        process :: State -> Object -> TreeIO State
+        diffCurrent (InCommit mark ancestors branch start ps info) = do
+          current <- updateHashes
+          Sealed diff
+                <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
+          return $ InCommit mark ancestors branch current ((reverseFL diff) +<+ ps) info
+
+        process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
           liftIO $ putStrLn ("progress " ++ BC.unpack p)
           return s
@@ -218,27 +226,31 @@ fastImport' repo marks initial = do
             addtag author pbranch
           info <- makeinfo author message False
           startstate <- updateHashes
-          return $ InCommit mark (previous, []) branch startstate info
+          return $ InCommit mark (previous, []) branch startstate NilRL info
 
-        process s@(InCommit _ _ _ _ _) (Modify (Left m) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (Left m) path) = do
           TM.copy (markpath m) (floatPath $ BC.unpack path)
-          return s
+          diffCurrent s
 
-        process s@(InCommit _ _ _ _ _) (Modify (Right bits) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (Right bits) path) = do
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
-          return s
+          diffCurrent s
 
-        process s@(InCommit _ _ _ _ _) (Delete path) = do
-          TM.unlink (floatPath $ BC.unpack path)
-          return s
+        process (InCommit mark ancestors branch _ ps info) (Delete path) = do
+          let filePath = BC.unpack path
+              rmPatch = rmfile filePath
+          TM.unlink $ floatPath filePath
+          current <- updateHashes
+          return $ InCommit mark ancestors branch current (rmPatch :<: ps) info
 
-        process (InCommit mark (prev, current) branch start info) (From from) = do
-          return $ InCommit mark (prev, from:current) branch start info
+        process (InCommit mark (prev, current) branch start ps info) (From from) = do
+          return $ InCommit mark (prev, from:current) branch start ps info
 
-        process (InCommit mark (prev, current) branch start info) (Merge from) = do
-          return $ InCommit mark (prev, from:current) branch start info
+        process (InCommit mark (prev, current) branch start ps info) (Merge from) = do
+          return $ InCommit mark (prev, from:current) branch start ps info
 
-        process (InCommit mark ancestors branch start info) x = do
+
+        process (InCommit mark ancestors branch start ps info) x = do
           case ancestors of
             (_, []) -> return () -- OK, previous commit is the ancestor
             (Just n, list)
@@ -249,10 +261,7 @@ fastImport' repo marks initial = do
             (Nothing, list) ->
               liftIO $ putStrLn $ "WARNING: Linearising non-linear ancestry " ++ show list
 
-          current <- updateHashes
-          Sealed diff
-                <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
-          (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL diff
+          (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL $ reverseRL ps
           let patch = infopatch info prims
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)
