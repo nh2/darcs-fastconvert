@@ -13,6 +13,7 @@ import Control.Monad ( when )
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
+import Data.Maybe ( isNothing )
 import System.Directory ( doesFileExist, createDirectory )
 import System.IO ( stdin )
 
@@ -31,7 +32,7 @@ import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 
-import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile )
+import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir, adddir, move )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Prim.Class ( PrimOf )
@@ -39,6 +40,7 @@ import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.Set ( newset2FL )
+import Darcs.Utils ( nubsort )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL)
 import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
 
@@ -47,11 +49,11 @@ import qualified Storage.Hashed.Monad as TM
 import qualified Storage.Hashed.Tree as T
 import Storage.Hashed.Darcs
 import Storage.Hashed.Hash( encodeBase16, sha256, Hash(..) )
-import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..) )
+import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..), findTree )
 import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
-                                  , appendPath )
+                                  , appendPath, parents, anchorPath )
 import Darcs.Diff( treeDiff )
-import Darcs.Utils ( withCurrentDirectory )
+import Darcs.Utils ( withCurrentDirectory, treeHasDir, treeHasFile )
 
 import Utils
 import Marks
@@ -76,6 +78,8 @@ data Object = Blob (Maybe Int) Content
             | Tag Int AuthorInfo Message
             | Modify (Either Int Content) B.ByteString -- (mark or content), filename
             | Gitlink B.ByteString
+            | Copy B.ByteString B.ByteString -- source/target filenames
+            | Rename B.ByteString B.ByteString -- orig/new filenames
             | Delete B.ByteString -- filename
             | From Int
             | Merge Int
@@ -249,6 +253,31 @@ fastImport' repo marks initial = do
         process (InCommit mark (prev, current) branch start ps info) (Merge from) = do
           return $ InCommit mark (prev, from:current) branch start ps info
 
+        process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
+          let unpackFloat = floatPath.BC.unpack
+          TM.copy (unpackFloat from) (unpackFloat to)
+          diffCurrent s
+
+        process (InCommit mark ancestors branch start ps info) (Rename from to) = do
+          let uFrom = BC.unpack from
+              uTo = BC.unpack to
+          targetDirExists <- liftIO $ treeHasDir start uTo
+          targetFileExists <- liftIO $ treeHasFile start uTo
+          preparePatchesRL <-
+            if (targetDirExists || targetFileExists)
+              then do
+                TM.unlink $ floatPath uTo
+                let rmPatch = if targetDirExists then rmdir uTo else rmfile uTo
+                return $ rmPatch :<: NilRL
+              else do
+                let parentPaths = parents $ floatPath uTo
+                    missing = filter (isNothing . findTree start) parentPaths
+                    missingPaths = nubsort (map (anchorPath "") missing)
+                return $ foldl (\dirPs dir -> adddir dir :<: dirPs) NilRL missingPaths
+          let movePatches = (move uFrom uTo) :<: preparePatchesRL
+          TM.rename (floatPath uFrom) (floatPath uTo)
+          current <- updateHashes
+          return $ InCommit mark ancestors branch current (movePatches +<+ ps) info
 
         process (InCommit mark ancestors branch start ps info) x = do
           case ancestors of
@@ -297,6 +326,8 @@ parseObject = next object
                    <|> p_commit
                    <|> p_tag
                    <|> p_modify
+                   <|> p_rename
+                   <|> p_copy
                    <|> p_from
                    <|> p_merge
                    <|> p_delete
@@ -346,6 +377,18 @@ parseObject = next object
         p_from = lexString "from" >> From `fmap` p_marked
         p_merge = lexString "merge" >> Merge `fmap` p_marked
         p_delete = lexString "D" >> Delete `fmap` line
+        p_quotedName = lex $ do A.char '"'
+                                name <- A.takeWhile (/= '"')
+                                A.char '"'
+                                return name
+        p_copy = do lexString "C"
+                    source <- p_quotedName
+                    target <- p_quotedName
+                    return $ Copy source target
+        p_rename = do lexString "R"
+                      oldName <- p_quotedName
+                      newName <- p_quotedName
+                      return $ Rename oldName newName
         p_modify = do lexString "M"
                       mode <- lex $ A.takeWhile (A.inClass "01234567890")
                       mark <- p_refid
