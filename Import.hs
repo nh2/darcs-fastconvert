@@ -257,6 +257,8 @@ fastImport' repo marks initial = do
         process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
           let unpackFloat = floatPath.BC.unpack
           TM.copy (unpackFloat from) (unpackFloat to)
+          -- We can't tell Darcs that a file has been copied, so it'll show as
+          -- an addfile.
           diffCurrent s
 
         process (InCommit mark ancestors branch start ps info) (Rename from to) = do
@@ -264,6 +266,8 @@ fastImport' repo marks initial = do
               uTo = BC.unpack to
           targetDirExists <- liftIO $ treeHasDir start uTo
           targetFileExists <- liftIO $ treeHasFile start uTo
+          -- If the target exists, remove it; if it doesn't, add all its parent
+          -- directories.
           preparePatchesRL <-
             if (targetDirExists || targetFileExists)
               then do
@@ -280,7 +284,8 @@ fastImport' repo marks initial = do
           current <- updateHashes
           return $ InCommit mark ancestors branch current (movePatches +<+ ps) info
 
-        process (InCommit mark ancestors branch start ps info) x = do
+        -- When we leave the commit, create a patch for the cumulated prims.
+        process (InCommit mark ancestors branch _ ps info) x = do
           case ancestors of
             (_, []) -> return () -- OK, previous commit is the ancestor
             (Just n, list)
