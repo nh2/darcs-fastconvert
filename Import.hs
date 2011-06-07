@@ -314,7 +314,7 @@ fastImport' inHandle printer repo marks initial = do
     readIORef marksref
 
 parseObject :: Handle -> (String -> TreeIO ()) -> BC.ByteString -> TreeIO (BC.ByteString, Object)
-parseObject inHandle printer = next inHandle printer object
+parseObject inHandle printer = next object
   where object = A.parse p_object
         lex :: A.Parser b -> A.Parser b
         lex p = p >>= \x -> A.skipSpace >> return x
@@ -402,15 +402,15 @@ parseObject inHandle printer = next inHandle printer object
                         Inline -> do bits <- p_data
                                      return $ Modify (Right bits) path
 
-        next :: Handle -> (String -> TreeIO ()) -> (B.ByteString -> A.Result Object) -> B.ByteString -> TreeIO (B.ByteString, Object)
-        next inHandle printer parser rest =
+        next :: (B.ByteString -> A.Result Object) -> B.ByteString -> TreeIO (B.ByteString, Object)
+        next parser rest =
           do chunk <- if B.null rest then liftIO $ B.hGet inHandle (64 * 1024)
                                      else return rest
              next_chunk parser chunk
         next_chunk parser chunk =
           case parser chunk of
              A.Done rest result -> return (rest, result)
-             A.Partial cont -> next inHandle printer cont B.empty
+             A.Partial cont -> next cont B.empty
              A.Fail _ ctx err -> do
                printer $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
                fail $ "Error parsing stream. " ++ err ++ "\nContext: " ++ show ctx
