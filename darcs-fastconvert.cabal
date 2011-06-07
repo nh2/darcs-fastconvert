@@ -51,11 +51,14 @@ Build-type:          Simple
 -- Extra-source-files:
 
 -- Constraint on the version of Cabal needed to build this package.
-Cabal-version:       >=1.6
+Cabal-version:       >=1.10
+
+extra-source-files:
+    tests/*.sh
 
 source-repository head
   type:     darcs
-  location: http://repos.mornfall.net/darcs-fastconvert
+  location: http://darcsden.com/owst/darcs-fastconvert-gsoc/
 
 Executable darcs-fastconvert
   -- .hs or .lhs file containing the Main module.
@@ -89,3 +92,16 @@ Executable darcs-fastconvert
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:
 
+Test-Suite test
+  type: exitcode-stdio-1.0
+
+  build-tools: ghc >= 6.10 && < 7.2
+
+  main-is: test.hs
+
+  build-depends:   base          < 5,
+                   filepath     >= 1.1.0.0 && < 1.3.0.0,
+                   cmdlib       >= 0.2.1 && < 0.4,
+                   shellish     >= 0.1.3 && < 0.2,
+                   test-framework             >= 0.2.2,
+                   bytestring >= 0.9 && < 0.10
