@@ -4,6 +4,9 @@ import Import
 import Export
 import Bridge
 import System.Console.CmdLib
+import Control.Monad.Trans ( liftIO )
+import System.IO ( stdin )
+import qualified Data.ByteString.Lazy as BL
 
 data Cmd = Import { repo :: String
                   , format :: RepoFormat
@@ -59,10 +62,10 @@ handleCmd :: Cmd -> IO ()
 handleCmd c = case c of
   Import {} | create c -> case readMarks c of
                [] -> format c `seq` -- avoid late failure
-                       runCmdWithMarks c (const $ fastImport (repo c) (format c))
+                       runCmdWithMarks c (const $ fastImport stdin (liftIO . putStrLn) (repo c) (format c))
                _  -> die "cannot create repo, with existing marksfile."
-            | otherwise -> runCmdWithMarks c $ fastImportIncremental (repo c)
-  Export {} -> runCmdWithMarks c $ fastExport (repo c)
+            | otherwise -> runCmdWithMarks c $ fastImportIncremental stdin (liftIO . putStrLn) (repo c)
+  Export {} -> runCmdWithMarks c $ fastExport (liftIO . BL.putStrLn) (repo c)
   CreateBridge {} -> case inputRepo c of
         [] -> die "missing input-repo argument."
         r  -> createBridge r (clone c)

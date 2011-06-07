@@ -15,7 +15,7 @@ import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import Data.Maybe ( isNothing, fromMaybe )
 import System.Directory ( doesFileExist, createDirectory )
-import System.IO ( stdin )
+import System.IO ( Handle )
 
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
 import Darcs.Flags( Compression( .. )
@@ -97,8 +97,8 @@ instance Show (State p) where
   show (InCommit _ _ _ _ _ _) = "InCommit"
   show Done =  "Done"
 
-fastImport :: String -> RepoFormat -> IO Marks
-fastImport outrepo fmt =
+fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat -> IO Marks
+fastImport inHandle printer outrepo fmt =
   do createDirectory outrepo
      withCurrentDirectory outrepo $ do
        createRepository $ case fmt of
@@ -106,12 +106,12 @@ fastImport outrepo fmt =
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
          let initState = Toplevel Nothing $ BC.pack "refs/heads/master"
-         marks <- fastImport' repo emptyMarks initState
+         marks <- fastImport' inHandle printer repo emptyMarks initState
          createPristineDirectoryTree repo "." -- this name is really confusing
          return marks
 
-fastImportIncremental :: String -> Marks -> IO Marks
-fastImportIncremental repodir marks = withCurrentDirectory repodir $
+fastImportIncremental :: Handle -> (String -> TreeIO ()) -> String -> Marks -> IO Marks
+fastImportIncremental inHandle printer repodir marks = withCurrentDirectory repodir $
     withRepoLock [] $ RepoJob $ \repo -> do
         -- Read the last mark we processed on a previous import, to prevent non
         -- linear history errors.
@@ -119,11 +119,11 @@ fastImportIncremental repodir marks = withCurrentDirectory repodir $
                 0 -> Nothing
                 n -> Just n
             initState = Toplevel ancestor $ BC.pack "refs/heads/master"
-        fastImport' repo marks initState
+        fastImport' inHandle printer repo marks initState
 
-fastImport' :: forall p r u . (RepoPatch p) =>
-    Repository p r u r -> Marks -> State p -> IO Marks
-fastImport' repo marks initial = do
+fastImport' :: forall p r u . (RepoPatch p) => Handle ->
+    (String -> TreeIO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
+fastImport' inHandle printer repo marks initial = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
@@ -135,7 +135,7 @@ fastImport' repo marks initial = do
         check _ _ = die "FATAL: Patch and mark count do not agree."
 
         go :: State p -> B.ByteString -> TreeIO ()
-        go state rest = do (rest', item) <- parseObject rest
+        go state rest = do (rest', item) <- parseObject inHandle printer rest
                            state' <- process state item
                            case state' of
                              Done -> return ()
@@ -186,23 +186,22 @@ fastImport' repo marks initial = do
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
-          liftIO $ putStrLn ("progress " ++ BC.unpack p)
+          printer ("progress " ++ BC.unpack p)
           return s
 
         process (Toplevel _ _) End = do
           tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
           modify $ \s -> s { tree = tree' } -- lets dump the right tree, without _darcs
           let root = encodeBase16 $ treeHash tree'
-          liftIO $ do
-            putStrLn "\\o/ It seems we survived. Enjoy your new repo."
-            B.writeFile "_darcs/tentative_pristine" $
-              BC.concat [BC.pack "pristine:", root]
+          printer "\\o/ It seems we survived. Enjoy your new repo."
+          liftIO $ B.writeFile "_darcs/tentative_pristine" $ 
+            BC.concat [BC.pack "pristine:", root]
           return Done
 
         process (Toplevel n b) (Tag what author msg) = do
           if Just what == n
              then addtag author msg
-             else liftIO $ putStrLn $ "WARNING: Ignoring out-of-order tag " ++
+             else printer $ "WARNING: Ignoring out-of-order tag " ++
                              head (lines $ BC.unpack msg)
           return (Toplevel n b)
 
@@ -210,7 +209,7 @@ fastImport' repo marks initial = do
           do case from of
                (Just (MarkId k)) | Just k == n ->
                  addtag (BC.pack "Anonymous Tagger <> 0 +0000") branch
-               _ -> liftIO $ putStrLn $ "WARNING: Ignoring out-of-order reset " ++
+               _ -> printer $ "WARNING: Ignoring out-of-order reset " ++
                                         BC.unpack branch
              return $ Toplevel n branch
 
@@ -219,12 +218,12 @@ fastImport' repo marks initial = do
           return $ Toplevel n b
 
         process x (Gitlink link) = do
-          liftIO $ putStrLn $ "WARNING: Ignoring gitlink " ++ BC.unpack link
+          printer $ "WARNING: Ignoring gitlink " ++ BC.unpack link
           return x
 
         process (Toplevel previous pbranch) (Commit branch mark author message) = do
           when (pbranch /= branch) $ do
-            liftIO $ putStrLn ("Tagging branch: " ++ BC.unpack pbranch)
+            printer ("Tagging branch: " ++ BC.unpack pbranch)
             addtag author pbranch
           info <- makeinfo author message False
           startstate <- updateHashes
@@ -287,11 +286,11 @@ fastImport' repo marks initial = do
             (_, []) -> return () -- OK, previous commit is the ancestor
             (Just n, list)
               | n `elem` list -> return () -- OK, we base off one of the ancestors
-              | otherwise -> liftIO $ putStrLn $
+              | otherwise -> printer $
                                "WARNING: Linearising non-linear ancestry:" ++
                                " currently at " ++ show n ++ ", ancestors " ++ show list
             (Nothing, list) ->
-              liftIO $ putStrLn $ "WARNING: Linearising non-linear ancestry " ++ show list
+              printer $ "WARNING: Linearising non-linear ancestry " ++ show list
 
           (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL $ reverseRL ps
           let patch = infopatch info prims
@@ -314,8 +313,8 @@ fastImport' repo marks initial = do
     cleanRepository repo
     readIORef marksref
 
-parseObject :: BC.ByteString -> TreeIO (BC.ByteString, Object)
-parseObject = next object
+parseObject :: Handle -> (String -> TreeIO ()) -> BC.ByteString -> TreeIO (BC.ByteString, Object)
+parseObject inHandle printer = next inHandle printer object
   where object = A.parse p_object
         lex :: A.Parser b -> A.Parser b
         lex p = p >>= \x -> A.skipSpace >> return x
@@ -403,16 +402,16 @@ parseObject = next object
                         Inline -> do bits <- p_data
                                      return $ Modify (Right bits) path
 
-        next :: (B.ByteString -> A.Result Object) -> B.ByteString -> TreeIO (B.ByteString, Object)
-        next parser rest =
-          do chunk <- if B.null rest then liftIO $ B.hGet stdin (64 * 1024)
+        next :: Handle -> (String -> TreeIO ()) -> (B.ByteString -> A.Result Object) -> B.ByteString -> TreeIO (B.ByteString, Object)
+        next inHandle printer parser rest =
+          do chunk <- if B.null rest then liftIO $ B.hGet inHandle (64 * 1024)
                                      else return rest
              next_chunk parser chunk
         next_chunk parser chunk =
           case parser chunk of
              A.Done rest result -> return (rest, result)
-             A.Partial cont -> next cont B.empty
+             A.Partial cont -> next inHandle printer cont B.empty
              A.Fail _ ctx err -> do
-               liftIO $ putStrLn $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
+               printer $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
                fail $ "Error parsing stream. " ++ err ++ "\nContext: " ++ show ctx
 
