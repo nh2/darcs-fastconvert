@@ -21,10 +21,9 @@ import System.Posix.Types ( FileMode )
 
 import Darcs.Commands ( commandCommand )
 import qualified Darcs.Commands.Get as DCG
-import Darcs.Flags ( DarcsFlag(Quiet) )
 import Darcs.Repository ( amNotInRepository, createRepository )
 import Darcs.Repository.Prefs ( addToPreflist )
-import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2) )
+import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2, Quiet) )
 import Darcs.Utils ( withCurrentDirectory )
 
 data VCSType = BareGit
@@ -69,7 +68,7 @@ createBridge :: FilePath -> Bool -> IO ()
 createBridge repoPath shouldClone = do
     fullOrigRepoPath <- canonicalizePath repoPath
     repoType <- identifyRepoType fullOrigRepoPath
-    putStrLn $ unwords $ ["Identified", show repoType, "repo at", fullOrigRepoPath]
+    putStrLn $ unwords ["Identified", show repoType, "repo at", fullOrigRepoPath]
     (topLevelDir, sourceRepoPath) <- cloneIfNeeded shouldClone repoType fullOrigRepoPath
     targetRepoPath <- initTargetRepo sourceRepoPath repoType
     setCurrentDirectory topLevelDir
@@ -84,17 +83,17 @@ createBridge repoPath shouldClone = do
         -- Create empty marks files for import/export for both repos.
         mapM_ (\f -> writeFile ("marks" </> f) "") [darcsExportMarksName,
             darcsImportMarksName, gitExportMarksName, gitImportMarksName]
-        putStrLn $ "Wrote new marks files."
+        putStrLn "Wrote new marks files."
         let writeSetExec f hook = writeFile f hook >> setFileMode f fullPerms
         let bridgeDirPath = topLevelDir </> bridgeDirName
         writeSetExec "hook" $ createPreHook bridgeDirPath
-        putStrLn $ "Wrote hook."
+        putStrLn "Wrote hook."
         setupHooks repoType sourceRepoPath targetRepoPath bridgeDirPath
         putStrLn $ "Wired up hook in both repos. Now syncing from " ++ show repoType
         syncBridge "." (otherVCS repoType)
   where
     cloneIfNeeded :: Bool -> VCSType -> FilePath -> IO (FilePath, FilePath)
-    cloneIfNeeded False _ path = return $ (takeDirectory path, path)
+    cloneIfNeeded False _ path = return (takeDirectory path, path)
     cloneIfNeeded True vcsType origRepoPath = do
         cwd <- getCurrentDirectory
         let (_, repoName) = splitFileName origRepoPath
@@ -107,9 +106,8 @@ createBridge repoPath shouldClone = do
         return (topLevelDir, clonedRepoPath)
 
     cloneRepo :: VCSType -> FilePath -> FilePath -> IO ()
-    cloneRepo Darcs old new = do
-        -- This feels like a hack, since getCmd isn't exported.
-        commandCommand DCG.get [Quiet] [old, new]
+    -- This feels like a hack, since getCmd isn't exported.
+    cloneRepo Darcs old new = commandCommand DCG.get [Quiet] [old, new]
     cloneRepo _ old new = do
         cloneProcHandle <- runProcess
             "git" ["clone", "-q", old, new] Nothing Nothing Nothing Nothing Nothing
@@ -134,7 +132,7 @@ createBridge repoPath shouldClone = do
 
     initTargetRepo :: FilePath -> VCSType -> IO FilePath
     initTargetRepo fullRepoPath repoType = do
-        let newPath = fullRepoPath ++ "_" ++ (show $ otherVCS repoType)
+        let newPath = fullRepoPath ++ "_" ++ show (otherVCS repoType)
         initTargetRepo' repoType newPath
         return newPath
 
@@ -247,7 +245,7 @@ syncBridge' fullBridgePath repoType = do
                     markIDs = map ((!! 0).words) newTargetExportMarks
                     markFudger m p = alterMark m ++ " " ++ p
                     newEntries = zipWith markFudger markIDs patchIDs
-                putStrLn $ (show $ length newEntries) ++ " marks to append."
+                putStrLn $ show (length newEntries) ++ " marks to append."
                 -- Prepend new entries to the marks file
                 writeFile tempImportMarks $ unlines newEntries
                 existingImportMarks <- readFile importMarks

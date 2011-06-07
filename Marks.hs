@@ -25,7 +25,7 @@ readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
                  return $ foldl merge M.empty lines
                `catch` \_ -> return emptyMarks
-  where merge set line = case (BS.split ':' line) of
+  where merge set line = case BS.split ':' line of
           [id, hash] -> M.insert (read $ BS.unpack id) (BS.dropWhile (== ' ') hash) set
           _ -> set -- ignore, although it is maybe not such a great idea...
 
@@ -36,7 +36,7 @@ writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
         format (k, s) = BS.concat [BS.pack $ show k, BS.pack ": ", s, BS.pack "\n"]
 
 handleCmdMarks :: FilePath -> FilePath -> (Marks -> IO Marks) -> IO ()
-handleCmdMarks inFile outFile act = do
+handleCmdMarks inFile outFile act =
   do marks <- case inFile of
        [] -> return emptyMarks
        x -> readMarks x

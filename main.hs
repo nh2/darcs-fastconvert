@@ -53,12 +53,12 @@ instance RecordCommand Cmd where
   mode_summary Sync   {} = "Sync an existing darcs bridge."
 
 runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
-runCmdWithMarks c act = Marks.handleCmdMarks (readMarks c) (writeMarks c) act
+runCmdWithMarks c = Marks.handleCmdMarks (readMarks c) (writeMarks c)
 
 handleCmd :: Cmd -> IO ()
 handleCmd c = case c of
   Import {} | create c -> case readMarks c of
-               [] -> (format c) `seq` -- avoid late failure
+               [] -> format c `seq` -- avoid late failure
                        runCmdWithMarks c (const $ fastImport (repo c) (format c))
                _  -> die "cannot create repo, with existing marksfile."
             | otherwise -> runCmdWithMarks c $ fastImportIncremental (repo c)

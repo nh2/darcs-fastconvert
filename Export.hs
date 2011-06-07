@@ -60,7 +60,7 @@ patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime . piDate . i
 
 patchAuthor :: (PatchInfoAnd p) x y -> String
 patchAuthor p = case span (/='<') author of
-  (_, "") -> case span (/='@') $ author of
+  (_, "") -> case span (/='@') author of
                  -- john@home -> john <john@home>
                  (n, "") -> n ++ " <unknown>"
                  (name, _) -> name ++ " <" ++ author ++ ">"
@@ -70,9 +70,9 @@ patchAuthor p = case span (/='<') author of
 
 patchMessage :: (PatchInfoAnd p) x y -> BLU.ByteString
 patchMessage p = BL.concat [ BLU.fromString (piName $ info p)
-                           , case (unlines . piLog $ info p) of
+                           , case unlines . piLog $ info p of
                                 "" -> BL.empty
-                                plog -> BLU.fromString ("\n" ++ plog)]
+                                plog -> BLU.fromString ('\n' : plog)]
 
 dumpBits :: [BLU.ByteString] -> TreeIO ()
 dumpBits = liftIO . BL.putStrLn . BL.intercalate "\n"
@@ -134,12 +134,12 @@ fastExport' repo marks = do
       mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
       mark p n = liftIO $ do putStrLn $ "mark :" ++ show n
                              modifyIORef marksref $ \m -> addMark m n (patchHash p)
-      checkOne :: (RepoPatch p) => Int -> (PatchInfoAnd p x y) -> TreeIO ()
+      checkOne :: (RepoPatch p) => Int -> PatchInfoAnd p x y -> TreeIO ()
       checkOne n p = do apply p
                         unless (inOrderTag tags p ||
                                 (getMark marks n == Just (patchHash p))) $
                           die $ "FATAL: Marks do not correspond: expected " ++
-                                (show $ getMark marks n) ++ ", got " ++ (BSC.unpack $ patchHash p)
+                                show (getMark marks n) ++ ", got " ++ BSC.unpack (patchHash p)
 
       -- |check drops any patches that have already been exported (as
       -- determined by the mark-number passed in), first checking they apply

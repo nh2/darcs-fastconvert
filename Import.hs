@@ -13,7 +13,7 @@ import Control.Monad ( when )
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
-import Data.Maybe ( isNothing )
+import Data.Maybe ( isNothing, fromMaybe )
 import System.Directory ( doesFileExist, createDirectory )
 import System.IO ( stdin )
 
@@ -40,7 +40,6 @@ import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.Set ( newset2FL )
-import Darcs.Utils ( nubsort )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL)
 import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
 
@@ -53,7 +52,7 @@ import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..), findTree )
 import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
                                   , appendPath, parents, anchorPath )
 import Darcs.Diff( treeDiff )
-import Darcs.Utils ( withCurrentDirectory, treeHasDir, treeHasFile )
+import Darcs.Utils ( nubsort, withCurrentDirectory, treeHasDir, treeHasFile )
 
 import Utils
 import Marks
@@ -90,7 +89,7 @@ data Object = Blob (Maybe Int) Content
 type Ancestors = (Marked, [Int])
 data State p where
     Toplevel :: Marked -> Branch -> State p
-    InCommit :: Marked -> Ancestors -> Branch -> (Tree IO) -> (RL (PrimOf p) cX cY) -> PatchInfo -> State p
+    InCommit :: Marked -> Ancestors -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
     Done :: State p
 
 instance Show (State p) where
@@ -153,9 +152,7 @@ fastImport' repo marks initial = do
               (author'', date'') = span (/='>') $ BC.unpack author
               date' = dropWhile (`notElem` "0123456789") date''
               author' = author'' ++ ">"
-              date = formatDateTime "%Y%m%d%H%M%S" $ case (parseDateTime "%s %z" date') of
-                Just x -> x
-                Nothing -> startOfTime
+              date = formatDateTime "%Y%m%d%H%M%S" $ fromMaybe startOfTime (parseDateTime "%s %z" date')
           liftIO $ patchinfo date (if tag then "TAG " ++ name else name) author' log
 
         addtag author msg =
@@ -171,7 +168,7 @@ fastImport' repo marks initial = do
 
         -- processing items
         updateHashes = do
-          let nodarcs = (\(AnchoredPath (Name x:_)) _ -> x /= BC.pack "_darcs")
+          let nodarcs (AnchoredPath (Name x:_)) _ = x /= BC.pack "_darcs"
               hashblobs (File blob@(T.Blob con NoHash)) =
                 do hash <- sha256 `fmap` readBlob blob
                    return $ File (T.Blob con hash)
@@ -183,8 +180,8 @@ fastImport' repo marks initial = do
         diffCurrent (InCommit mark ancestors branch start ps info) = do
           current <- updateHashes
           Sealed diff
-                <- unFreeLeft `fmap` (liftIO $ treeDiff (const TextFile) start current)
-          return $ InCommit mark ancestors branch current ((reverseFL diff) +<+ ps) info
+                <- unFreeLeft `fmap` liftIO (treeDiff (const TextFile) start current)
+          return $ InCommit mark ancestors branch current (reverseFL diff +<+ ps) info
         diffCurrent _ = error "This is never valid outside of a commit."
 
         process :: State p -> Object -> TreeIO (State p)
@@ -197,7 +194,7 @@ fastImport' repo marks initial = do
           modify $ \s -> s { tree = tree' } -- lets dump the right tree, without _darcs
           let root = encodeBase16 $ treeHash tree'
           liftIO $ do
-            putStrLn $ "\\o/ It seems we survived. Enjoy your new repo."
+            putStrLn "\\o/ It seems we survived. Enjoy your new repo."
             B.writeFile "_darcs/tentative_pristine" $
               BC.concat [BC.pack "pristine:", root]
           return Done
@@ -206,7 +203,7 @@ fastImport' repo marks initial = do
           if Just what == n
              then addtag author msg
              else liftIO $ putStrLn $ "WARNING: Ignoring out-of-order tag " ++
-                             (head $ lines $ BC.unpack msg)
+                             head (lines $ BC.unpack msg)
           return (Toplevel n b)
 
         process (Toplevel n _) (Reset branch from) =
@@ -218,7 +215,7 @@ fastImport' repo marks initial = do
              return $ Toplevel n branch
 
         process (Toplevel n b) (Blob (Just m) bits) = do
-          TM.writeFile (markpath m) $ (BL.fromChunks [bits])
+          TM.writeFile (markpath m) (BL.fromChunks [bits])
           return $ Toplevel n b
 
         process x (Gitlink link) = do
@@ -248,10 +245,10 @@ fastImport' repo marks initial = do
           current <- updateHashes
           return $ InCommit mark ancestors branch current (rmPatch :<: ps) info
 
-        process (InCommit mark (prev, current) branch start ps info) (From from) = do
+        process (InCommit mark (prev, current) branch start ps info) (From from) =
           return $ InCommit mark (prev, from:current) branch start ps info
 
-        process (InCommit mark (prev, current) branch start ps info) (Merge from) = do
+        process (InCommit mark (prev, current) branch start ps info) (Merge from) =
           return $ InCommit mark (prev, from:current) branch start ps info
 
         process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
@@ -269,7 +266,7 @@ fastImport' repo marks initial = do
           -- If the target exists, remove it; if it doesn't, add all its parent
           -- directories.
           preparePatchesRL <-
-            if (targetDirExists || targetFileExists)
+            if targetDirExists || targetFileExists
               then do
                 TM.unlink $ floatPath uTo
                 let rmPatch = if targetDirExists then rmdir uTo else rmfile uTo
@@ -279,7 +276,7 @@ fastImport' repo marks initial = do
                     missing = filter (isNothing . findTree start) parentPaths
                     missingPaths = nubsort (map (anchorPath "") missing)
                 return $ foldl (\dirPs dir -> adddir dir :<: dirPs) NilRL missingPaths
-          let movePatches = (move uFrom uTo) :<: preparePatchesRL
+          let movePatches = move uFrom uTo :<: preparePatchesRL
           TM.rename (floatPath uFrom) (floatPath uTo)
           current <- updateHashes
           return $ InCommit mark ancestors branch current (movePatches +<+ ps) info
@@ -412,10 +409,10 @@ parseObject = next object
                                      else return rest
              next_chunk parser chunk
         next_chunk parser chunk =
-          do case parser chunk of
-               A.Done rest result -> return (rest, result)
-               A.Partial cont -> next cont B.empty
-               A.Fail _ ctx err -> do
-                 liftIO $ putStrLn $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
-                 fail $ "Error parsing stream. " ++ err ++ "\nContext: " ++ show ctx
+          case parser chunk of
+             A.Done rest result -> return (rest, result)
+             A.Partial cont -> next cont B.empty
+             A.Fail _ ctx err -> do
+               liftIO $ putStrLn $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
+               fail $ "Error parsing stream. " ++ err ++ "\nContext: " ++ show ctx
 
