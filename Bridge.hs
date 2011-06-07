@@ -321,7 +321,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
                         when (exportEC /= ExitSuccess) (die "A subcommand failed!")
 
     gitExport target = waitForGit $ rawGitExport target
-    gitImport source = waitForGit $ rawGitExport source
+    gitImport source = waitForGit $ rawGitImport source
 
     rawGitExport target = do
         let marksPath = makeMarkPath gitExportMarksName
