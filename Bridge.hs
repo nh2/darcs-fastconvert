@@ -6,7 +6,7 @@ import Marks ( handleCmdMarks )
 import Import ( fastImportIncremental )
 import Export ( fastExport )
 
-import Control.Monad ( when )
+import Control.Monad ( when, unless )
 import Control.Monad.Error ( join )
 import Control.Monad.Trans.Error
 import Control.Monad.IO.Class
@@ -77,6 +77,10 @@ createBridge repoPath shouldClone = do
     (topLevelDir, sourceRepoPath) <- cloneIfNeeded shouldClone repoType fullOrigRepoPath
     targetRepoPath <- initTargetRepo sourceRepoPath repoType
     setCurrentDirectory topLevelDir
+    bridgeDirExists <- doesDirectoryExist bridgeDirName
+    when bridgeDirExists (do
+        putStrLn $ "Existing bridge directory detected: " ++ (topLevelDir </> bridgeDirName)
+        exitFailure)
     createDirectory bridgeDirName
     putStrLn $ unwords ["Initialised target", show $ otherVCS repoType,
                         "repo at", targetRepoPath]
@@ -104,6 +108,10 @@ createBridge repoPath shouldClone = do
         let (_, repoName) = splitFileName origRepoPath
             topLevelDir = cwd </> repoName ++ "_bridge"
             clonedRepoPath = topLevelDir </> repoName
+        tldExists <- doesDirectoryExist topLevelDir
+        when tldExists (do
+            putStrLn $ "Existing bridge directory detected: " ++ topLevelDir
+            exitFailure)
         createDirectory topLevelDir
         putStrLn $ unwords ["Cloning source repo from", origRepoPath
                            , "to", clonedRepoPath]
@@ -171,7 +179,8 @@ createBridge repoPath shouldClone = do
     setupHooks' :: FilePath -> FilePath -> FilePath -> IO ()
     setupHooks' darcsPath gitPath bridgePath = do
         let gitHookPath = joinPath [gitPath, "hooks", "pre-receive"]
-            darcsHookPath = joinPath [darcsPath, "_darcs", "hooks", "pre-apply"]
+            darcsHookDir = joinPath [darcsPath, "_darcs", "hooks"]
+            darcsHookPath = darcsHookDir </> "pre-apply"
             -- Writes a simple shell script hook file. The hook file written
             -- simply calls the hook script in the bridge directory, passing
             -- the appropriate VCS type.
@@ -179,8 +188,8 @@ createBridge repoPath shouldClone = do
                 let hookCall = (bridgePath </> "hook") ++ " " ++ vcsType ++ "\n"
                 writeFile path hookCall
                 setFileMode path fullPerms -- TODO: Windows?
-        -- Create Darcs hooks dir.
-        createDirectory (takeDirectory darcsHookPath)
+        darcsHookDirExists <- doesDirectoryExist darcsHookDir
+        unless darcsHookDirExists (createDirectory darcsHookDir)
         -- Write out hook files.
         mapM_ writeHookFile [(darcsHookPath, "darcs"), (gitHookPath, "git")]
         -- Update "apply" defaults, for Darcs.
