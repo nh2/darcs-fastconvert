@@ -187,7 +187,7 @@ createBridge repoPath shouldClone = do
             writeHookFile (path, vcsType) = do
                 let hookCall = (bridgePath </> "hook") ++ " " ++ vcsType ++ "\n"
                 writeFile path hookCall
-                setFileMode path fullPerms -- TODO: Windows?
+                setFileMode path fullPerms
         darcsHookDirExists <- doesDirectoryExist darcsHookDir
         unless darcsHookDirExists (createDirectory darcsHookDir)
         -- Write out hook files.
@@ -322,7 +322,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
 
     darcsFCCmd file mode marksFile toRun = do
         let marksPath = makeMarkPath marksFile
-        withFile file mode (\h -> handleCmdMarks marksPath marksPath (toRun h))
+        withFile file mode (handleCmdMarks marksPath marksPath . toRun)
 
     darcsImport source = darcsFCCmd source ReadMode darcsImportMarksName $
         \input -> fastImportIncremental input (liftIO.putStrLn) darcsPath
