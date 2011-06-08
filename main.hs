@@ -71,7 +71,7 @@ handleCmd c = case c of
         r  -> createBridge r (clone c)
   Sync {}   -> case bridgePath c of
         [] -> die "missing bridge-path argument."
-        b  -> syncBridge b (repoType c)
+        b  -> syncBridge False b (repoType c)
 
 main :: IO ()
 main = getArgs >>= dispatchR [] >>= handleCmd

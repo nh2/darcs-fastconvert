@@ -95,7 +95,7 @@ createBridge repoPath shouldClone = do
         putStrLn "Wrote hook."
         setupHooks repoType sourceRepoPath targetRepoPath bridgeDirPath
         putStrLn $ "Wired up hook in both repos. Now syncing from " ++ show repoType
-        syncBridge "." (otherVCS repoType)
+        syncBridge True "." (otherVCS repoType)
   where
     cloneIfNeeded :: Bool -> VCSType -> FilePath -> IO (FilePath, FilePath)
     cloneIfNeeded False _ path = return (takeDirectory path, path)
@@ -189,18 +189,19 @@ createBridge repoPath shouldClone = do
 
 -- |syncBridge takes a bridge folder location and a target vcs-type, and
 -- attempts to pull in any changes from the other repo, having obtained the
--- lock, to prevent concurrent access.
-syncBridge :: FilePath -> VCSType -> IO ()
-syncBridge bridgePath repoType = do
+-- lock, to prevent concurrent access. If this is the first sync, out-of-date
+-- warnings and exitFailure aren't performed.
+syncBridge :: Bool -> FilePath -> VCSType -> IO ()
+syncBridge firstSync bridgePath repoType = do
     fullBridgePath <- canonicalizePath bridgePath
     setCurrentDirectory fullBridgePath
-    gotLock <- withLockCanFail "lock" (syncBridge' fullBridgePath repoType)
+    gotLock <- withLockCanFail "lock" (syncBridge' firstSync fullBridgePath repoType)
     case gotLock of
         Left _ -> putStrLn "Cannot take bridge lock!" >> exitFailure
         _      -> exitSuccess
 
-syncBridge' :: FilePath -> VCSType -> IO ()
-syncBridge' fullBridgePath repoType = do
+syncBridge' :: Bool -> FilePath -> VCSType -> IO ()
+syncBridge' firstSync fullBridgePath repoType = do
     errConfig <- runErrorT $ getConfig fullBridgePath
     case errConfig of
         Left _ -> die $ "Malformed/missing config file in " ++ fullBridgePath
@@ -254,10 +255,15 @@ syncBridge' fullBridgePath repoType = do
                 mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
                     tempUpdateMarks]
 
-                putStrLn "Changes were pulled in via the bridge, update your local repo."
-                -- non-zero exit-code to signal to the VCS that action is
-                -- required by the user before allowing the push/apply.
-                exitFailure)
+                if firstSync
+                  then do
+                      putStrLn "Bridge successfully synced."
+                      exitSuccess
+                  else do
+                      putStrLn "Changes were pulled in via the bridge, update your local repo."
+                      -- non-zero exit-code to signal to the VCS that action is
+                      -- required by the user before allowing the push/apply.
+                      exitFailure)
             mapM_ removeFile [oldSourceMarks, exportData]
             putStrLn "No changes to pull in via the bridge."
             exitSuccess
