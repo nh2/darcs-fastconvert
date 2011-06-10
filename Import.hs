@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
-import Prelude hiding ( readFile, lex, maybe, log )
+import Prelude hiding ( readFile, lex, log )
 import Data.Data
 import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
@@ -321,8 +321,8 @@ parseObject inHandle printer = next object
         lexString s = A.string (BC.pack s) >> A.skipSpace
         line = lex $ A.takeWhile (/='\n')
 
-        maybe :: (Alternative f, Monad f) => f a -> f (Maybe a)
-        maybe p = Just `fmap` p <|> return Nothing
+        optional :: (Alternative f, Monad f) => f a -> f (Maybe a)
+        optional p = Just `fmap` p <|> return Nothing
         p_object = p_blob
                    <|> p_reset
                    <|> p_commit
@@ -338,12 +338,12 @@ parseObject inHandle printer = next object
         p_author name = lexString name >> line
         p_reset = do lexString "reset"
                      branch <- line
-                     refid <- maybe $ lexString "from" >> p_refid
+                     refid <- optional $ lexString "from" >> p_refid
                      return $ Reset branch refid
         p_commit = do lexString "commit"
                       branch <- line
-                      mark <- maybe p_mark
-                      _ <- maybe $ p_author "author"
+                      mark <- optional p_mark
+                      _ <- optional $ p_author "author"
                       committer <- p_author "committer"
                       message <- p_data
                       return $ Commit branch mark committer message
@@ -355,7 +355,7 @@ parseObject inHandle printer = next object
                    return $ Tag mark author message
 
         p_blob = do lexString "blob"
-                    mark <- maybe p_mark
+                    mark <- optional p_mark
                     Blob mark `fmap` p_data
                   <?> "p_blob"
 
