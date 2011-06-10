@@ -83,19 +83,19 @@ data Object = Blob (Maybe Int) Content
             | From Int
             | Merge Int
             | Progress B.ByteString
-            | End
             deriving Show
+
+data ObjectStream = Elem B.ByteString Object
+                  | End
 
 type Ancestors = (Marked, [Int])
 data State p where
     Toplevel :: Marked -> Branch -> State p
     InCommit :: Marked -> Ancestors -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
-    Done :: State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
   show (InCommit _ _ _ _ _ _) = "InCommit"
-  show Done =  "Done"
 
 fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat -> IO Marks
 fastImport inHandle printer outrepo fmt =
@@ -135,11 +135,22 @@ fastImport' inHandle printer repo marks initial = do
         check _ _ = die "FATAL: Patch and mark count do not agree."
 
         go :: State p -> B.ByteString -> TreeIO ()
-        go state rest = do (rest', item) <- parseObject inHandle printer rest
-                           state' <- process state item
-                           case state' of
-                             Done -> return ()
-                             _ -> go state' rest'
+        go state rest = do objectStream <- parseObject inHandle printer rest
+                           case objectStream of
+                             End -> handleEndOfStream state
+                             Elem rest' obj -> do
+                                state' <- process state obj
+                                go state' rest'
+
+        handleEndOfStream state = do
+          -- At the end of the stream, we'll be InCommit, so finalize it.
+          finalizeCommit state
+          tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
+          modify $ \s -> s { tree = tree' } -- lets dump the right tree, without _darcs
+          let root = encodeBase16 $ treeHash tree'
+          printer "\\o/ It seems we survived. Enjoy your new repo."
+          liftIO $ B.writeFile "_darcs/tentative_pristine" $
+            BC.concat [BC.pack "pristine:", root]
 
         -- sort marks into buckets, since there can be a *lot* of them
         markpath :: Int -> AnchoredPath
@@ -188,15 +199,6 @@ fastImport' inHandle printer repo marks initial = do
         process s (Progress p) = do
           printer ("progress " ++ BC.unpack p)
           return s
-
-        process (Toplevel _ _) End = do
-          tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
-          modify $ \s -> s { tree = tree' } -- lets dump the right tree, without _darcs
-          let root = encodeBase16 $ treeHash tree'
-          printer "\\o/ It seems we survived. Enjoy your new repo."
-          liftIO $ B.writeFile "_darcs/tentative_pristine" $ 
-            BC.concat [BC.pack "pristine:", root]
-          return Done
 
         process (Toplevel n b) (Tag what author msg) = do
           if Just what == n
@@ -281,7 +283,16 @@ fastImport' inHandle printer repo marks initial = do
           return $ InCommit mark ancestors branch current (movePatches +<+ ps) info
 
         -- When we leave the commit, create a patch for the cumulated prims.
-        process (InCommit mark ancestors branch _ ps info) x = do
+        process s@(InCommit mark _ branch _ _ _) x = do
+          finalizeCommit s
+          process (Toplevel mark branch) x
+
+        process state obj = do
+          liftIO $ print obj
+          fail $ "Unexpected object in state " ++ show state
+
+        finalizeCommit (Toplevel _ _) = error "Cannot finalize commit at toplevel"
+        finalizeCommit (InCommit mark ancestors _ _ ps info) = do
           case ancestors of
             (_, []) -> return () -- OK, previous commit is the ancestor
             (Just n, list)
@@ -301,11 +312,6 @@ fastImport' inHandle printer repo marks initial = do
             Just n -> case getMark marks n of
               Nothing -> liftIO $ modifyIORef marksref $ \m -> addMark m n (patchHash $ n2pia patch)
               Just n' -> die $ "FATAL: Mark already exists: " ++ BC.unpack n'
-          process (Toplevel mark branch) x
-
-        process state obj = do
-          liftIO $ print obj
-          fail $ "Unexpected object in state " ++ show state
 
     check patches (listMarks marks)
     hashedTreeIO (go initial B.empty) pristine "_darcs/pristine.hashed"
@@ -313,9 +319,9 @@ fastImport' inHandle printer repo marks initial = do
     cleanRepository repo
     readIORef marksref
 
-parseObject :: Handle -> (String -> TreeIO ()) -> BC.ByteString -> TreeIO (BC.ByteString, Object)
-parseObject inHandle printer = next object
-  where object = A.parse p_object
+parseObject :: Handle -> (String -> TreeIO ()) -> BC.ByteString -> TreeIO ObjectStream
+parseObject inHandle printer = next mbObject
+  where mbObject = A.parse p_maybeObject
         lex :: A.Parser b -> A.Parser b
         lex p = p >>= \x -> A.skipSpace >> return x
         lexString s = A.string (BC.pack s) >> A.skipSpace
@@ -323,6 +329,10 @@ parseObject inHandle printer = next object
 
         optional :: (Alternative f, Monad f) => f a -> f (Maybe a)
         optional p = Just `fmap` p <|> return Nothing
+
+        p_maybeObject = Just `fmap` p_object
+                        <|> (A.endOfInput >> return Nothing)
+
         p_object = p_blob
                    <|> p_reset
                    <|> p_commit
@@ -334,7 +344,7 @@ parseObject inHandle printer = next object
                    <|> p_merge
                    <|> p_delete
                    <|> (lexString "progress" >> Progress `fmap` line)
-                   <|> (A.endOfInput >> return End)
+
         p_author name = lexString name >> line
         p_reset = do lexString "reset"
                      branch <- line
@@ -402,14 +412,14 @@ parseObject inHandle printer = next object
                         Inline -> do bits <- p_data
                                      return $ Modify (Right bits) path
 
-        next :: (B.ByteString -> A.Result Object) -> B.ByteString -> TreeIO (B.ByteString, Object)
+        next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString -> TreeIO ObjectStream
         next parser rest =
           do chunk <- if B.null rest then liftIO $ B.hGet inHandle (64 * 1024)
                                      else return rest
              next_chunk parser chunk
         next_chunk parser chunk =
           case parser chunk of
-             A.Done rest result -> return (rest, result)
+             A.Done rest result -> return . maybe End (Elem rest) $ result
              A.Partial cont -> next cont B.empty
              A.Fail _ ctx err -> do
                printer $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
