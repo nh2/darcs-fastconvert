@@ -68,14 +68,21 @@ type AuthorInfo = B.ByteString
 type Message = B.ByteString
 type Content = B.ByteString
 
-data RefId = MarkId Int | HashId B.ByteString | Inline
-           deriving Show
+data ModifyData = ModifyMark Int
+                | ModifyHash B.ByteString
+                | Inline Content
+                deriving Show
+
+data Committish = MarkId Int
+                | HashId B.ByteString
+                | BranchName B.ByteString
+                deriving Show
 
 data Object = Blob (Maybe Int) Content
-            | Reset Branch (Maybe RefId)
+            | Reset Branch (Maybe Committish)
             | Commit Branch Marked AuthorInfo Message
             | Tag Int AuthorInfo Message
-            | Modify (Either Int Content) B.ByteString -- (mark or content), filename
+            | Modify ModifyData B.ByteString -- (mark, hash or content), filename
             | Gitlink B.ByteString
             | Copy B.ByteString B.ByteString -- source/target filenames
             | Rename B.ByteString B.ByteString -- orig/new filenames
@@ -89,6 +96,7 @@ data ObjectStream = Elem B.ByteString Object
                   | End
 
 type Ancestors = (Marked, [Int])
+
 data State p where
     Toplevel :: Marked -> Branch -> State p
     InCommit :: Marked -> Ancestors -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
@@ -135,7 +143,7 @@ fastImport' inHandle printer repo marks initial = do
         check _ _ = die "FATAL: Patch and mark count do not agree."
 
         go :: State p -> B.ByteString -> TreeIO ()
-        go state rest = do objectStream <- parseObject inHandle printer rest
+        go state rest = do objectStream <- liftIO $ parseObject inHandle rest
                            case objectStream of
                              End -> handleEndOfStream state
                              Elem rest' obj -> do
@@ -231,11 +239,11 @@ fastImport' inHandle printer repo marks initial = do
           startstate <- updateHashes
           return $ InCommit mark (previous, []) branch startstate NilRL info
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (Left m) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           diffCurrent s
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (Right bits) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           diffCurrent s
 
@@ -291,6 +299,7 @@ fastImport' inHandle printer repo marks initial = do
           liftIO $ print obj
           fail $ "Unexpected object in state " ++ show state
 
+        finalizeCommit :: RepoPatch p => State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) = error "Cannot finalize commit at toplevel"
         finalizeCommit (InCommit mark ancestors _ _ ps info) = do
           case ancestors of
@@ -319,8 +328,8 @@ fastImport' inHandle printer repo marks initial = do
     cleanRepository repo
     readIORef marksref
 
-parseObject :: Handle -> (String -> TreeIO ()) -> BC.ByteString -> TreeIO ObjectStream
-parseObject inHandle printer = next mbObject
+parseObject :: Handle -> BC.ByteString -> IO ObjectStream
+parseObject inHandle = next mbObject
   where mbObject = A.parse p_maybeObject
         lex :: A.Parser b -> A.Parser b
         lex p = p >>= \x -> A.skipSpace >> return x
@@ -346,10 +355,16 @@ parseObject inHandle printer = next mbObject
                    <|> (lexString "progress" >> Progress `fmap` line)
 
         p_author name = lexString name >> line
+
         p_reset = do lexString "reset"
                      branch <- line
-                     refid <- optional $ lexString "from" >> p_refid
-                     return $ Reset branch refid
+                     committish <- optional $ lexString "from" >> p_committish
+                     return $ Reset branch committish
+
+        p_committish = MarkId `fmap` p_marked
+                   <|> HashId `fmap` p_hash
+                   <|> BranchName `fmap` line
+
         p_commit = do lexString "commit"
                       branch <- line
                       mark <- optional p_mark
@@ -357,6 +372,7 @@ parseObject inHandle printer = next mbObject
                       committer <- p_author "committer"
                       message <- p_data
                       return $ Commit branch mark committer message
+
         p_tag = do lexString "tag" >> line -- FIXME we ignore branch for now
                    lexString "from"
                    mark <- p_marked
@@ -371,14 +387,16 @@ parseObject inHandle printer = next mbObject
 
         p_mark :: A.Parser Int
         p_mark = do lexString "mark"
-                    lex $ A.char ':'
-                    lex A.decimal
+                    p_marked
                   <?> "p_mark"
 
-        p_refid :: A.Parser RefId
-        p_refid = MarkId `fmap` p_marked
-                  <|> (lexString "inline" >> return Inline)
-                  <|> HashId `fmap` p_hash
+        p_modifyData :: A.Parser ModifyData
+        p_modifyData = ModifyMark `fmap` p_marked
+                    -- Use try, since we don't know we haven't got a hash,
+                    -- until we encounter a '/'
+                   <|> A.try (fmap ModifyHash p_hash)
+                   <|> (lexString "inline" >> Inline `fmap` p_data)
+
         p_data = do lexString "data"
                     len <- A.decimal
                     A.char '\n'
@@ -403,16 +421,14 @@ parseObject inHandle printer = next mbObject
                       return $ Rename oldName newName
         p_modify = do lexString "M"
                       mode <- lex $ A.takeWhile (A.inClass "01234567890")
-                      mark <- p_refid
+                      mark <- p_modifyData
                       path <- line
                       case mark of
-                        HashId hash | mode == BC.pack "160000" -> return $ Gitlink hash
+                        ModifyHash hash | mode == BC.pack "160000" -> return $ Gitlink hash
                                     | otherwise -> fail ":(("
-                        MarkId n -> return $ Modify (Left n) path
-                        Inline -> do bits <- p_data
-                                     return $ Modify (Right bits) path
+                        _ -> return $ Modify mark path
 
-        next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString -> TreeIO ObjectStream
+        next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString -> IO ObjectStream
         next parser rest =
           do chunk <- if B.null rest then liftIO $ B.hGet inHandle (64 * 1024)
                                      else return rest
@@ -422,6 +438,6 @@ parseObject inHandle printer = next mbObject
              A.Done rest result -> return . maybe End (Elem rest) $ result
              A.Partial cont -> next cont B.empty
              A.Fail _ ctx err -> do
-               printer $ "=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
-               fail $ "Error parsing stream. " ++ err ++ "\nContext: " ++ show ctx
+               let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
+               fail $ "Error parsing stream. " ++ err ++ ch ++ "\nContext: " ++ show ctx
 
