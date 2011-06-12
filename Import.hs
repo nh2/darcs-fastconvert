@@ -106,15 +106,15 @@ instance Show (State p) where
   show (InCommit _ _ _ _ _ _) = "InCommit"
 
 fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat -> IO Marks
-fastImport inHandle printer outrepo fmt =
-  do createDirectory outrepo
-     withCurrentDirectory outrepo $ do
+fastImport inHandle printer repodir fmt =
+  do createDirectory repodir
+     withCurrentDirectory repodir $ do
        createRepository $ case fmt of
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
          let initState = Toplevel Nothing $ BC.pack "refs/heads/master"
-         marks <- fastImport' inHandle printer repo emptyMarks initState
+         marks <- fastImport' repodir inHandle printer repo emptyMarks initState
          createPristineDirectoryTree repo "." -- this name is really confusing
          return marks
 
@@ -127,11 +127,11 @@ fastImportIncremental inHandle printer repodir marks = withCurrentDirectory repo
                 0 -> Nothing
                 n -> Just n
             initState = Toplevel ancestor $ BC.pack "refs/heads/master"
-        fastImport' inHandle printer repo marks initState
+        fastImport' repodir inHandle printer repo marks initState
 
-fastImport' :: forall p r u . (RepoPatch p) => Handle ->
+fastImport' :: forall p r u . (RepoPatch p) => FilePath -> Handle ->
     (String -> TreeIO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
-fastImport' inHandle printer repo marks initial = do
+fastImport' repodir inHandle printer repo marks initial = do
     pristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
