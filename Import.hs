@@ -63,6 +63,7 @@ import Data.Attoparsec.Char8( (<?>) )
 data RepoFormat = Darcs2Format | HashedFormat deriving (Eq, Data, Typeable)
 
 type Marked = Maybe Int
+type Merges = [Int]
 type Branch = B.ByteString
 type AuthorInfo = B.ByteString
 type Message = B.ByteString
@@ -80,15 +81,13 @@ data Committish = MarkId Int
 
 data Object = Blob (Maybe Int) Content
             | Reset Branch (Maybe Committish)
-            | Commit Branch Marked AuthorInfo Message
+            | Commit Branch Marked AuthorInfo Message Marked Merges
             | Tag Int AuthorInfo Message
             | Modify ModifyData B.ByteString -- (mark, hash or content), filename
             | Gitlink B.ByteString
             | Copy B.ByteString B.ByteString -- source/target filenames
             | Rename B.ByteString B.ByteString -- orig/new filenames
             | Delete B.ByteString -- filename
-            | From Int
-            | Merge Int
             | Progress B.ByteString
             deriving Show
 
@@ -233,13 +232,14 @@ fastImport' repodir inHandle printer repo marks initial = do
           printer $ "WARNING: Ignoring gitlink " ++ BC.unpack link
           return x
 
-        process (Toplevel previous pbranch) (Commit branch mark author message) = do
+        process (Toplevel previous pbranch) (Commit branch mark author message from merges) = do
+          let ancestors = (previous, maybe id (\f -> (f :)) from $ merges)
           when (pbranch /= branch) $ do
             printer ("Tagging branch: " ++ BC.unpack pbranch)
             addtag author pbranch
           info <- makeinfo author message False
           startstate <- updateHashes
-          return $ InCommit mark (previous, []) branch startstate NilRL info
+          return $ InCommit mark ancestors branch startstate NilRL info
 
         process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
           TM.copy (markpath m) (floatPath $ BC.unpack path)
@@ -255,12 +255,6 @@ fastImport' repodir inHandle printer repo marks initial = do
           TM.unlink $ floatPath filePath
           current <- updateHashes
           return $ InCommit mark ancestors branch current (rmPatch :<: ps) info
-
-        process (InCommit mark (prev, current) branch start ps info) (From from) =
-          return $ InCommit mark (prev, from:current) branch start ps info
-
-        process (InCommit mark (prev, current) branch start ps info) (Merge from) =
-          return $ InCommit mark (prev, from:current) branch start ps info
 
         process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
           let unpackFloat = floatPath.BC.unpack
@@ -351,8 +345,6 @@ parseObject inHandle = next mbObject
                    <|> p_modify
                    <|> p_rename
                    <|> p_copy
-                   <|> p_from
-                   <|> p_merge
                    <|> p_delete
                    <|> (lexString "progress" >> Progress `fmap` line)
 
@@ -373,7 +365,9 @@ parseObject inHandle = next mbObject
                       _ <- optional $ p_author "author"
                       committer <- p_author "committer"
                       message <- p_data
-                      return $ Commit branch mark committer message
+                      from <- optional p_from
+                      merges <- A.many p_merge
+                      return $ Commit branch mark committer message from merges
 
         p_tag = do lexString "tag" >> line -- FIXME we ignore branch for now
                    lexString "from"
@@ -406,8 +400,8 @@ parseObject inHandle = next mbObject
                   <?> "p_data"
         p_marked = lex $ A.char ':' >> A.decimal
         p_hash = lex $ A.takeWhile1 (A.inClass "0123456789abcdefABCDEF")
-        p_from = lexString "from" >> From `fmap` p_marked
-        p_merge = lexString "merge" >> Merge `fmap` p_marked
+        p_from = lexString "from" >> p_marked
+        p_merge = lexString "merge" >> p_marked
         p_delete = lexString "D" >> Delete `fmap` line
         p_quotedName = lex $ do A.char '"'
                                 name <- A.takeWhile (/= '"')
