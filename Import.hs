@@ -151,8 +151,10 @@ fastImport' inHandle printer repo marks initial = do
                                 go state' rest'
 
         handleEndOfStream state = do
-          -- At the end of the stream, we'll be InCommit, so finalize it.
-          finalizeCommit state
+          -- We won't necessarily be InCommit at the EOS.
+          case state of
+            s@(InCommit _ _ _ _ _ _) -> finalizeCommit s
+            _ -> return ()
           tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
           modify $ \s -> s { tree = tree' } -- lets dump the right tree, without _darcs
           let root = encodeBase16 $ treeHash tree'
