@@ -12,16 +12,16 @@ commit refs/heads/master
 mark :2
 author Owen Stephens <git@owenstephens.co.uk> 1308064714 +0100
 committer Owen Stephens <git@owenstephens.co.uk> 1308064714 +0100
-data 2
-a
+data 9
+a master
 M 100644 :1 a
 
 commit refs/heads/master
 mark :3
 author Owen Stephens <git@owenstephens.co.uk> 1308064748 +0100
 committer Owen Stephens <git@owenstephens.co.uk> 1308064748 +0100
-data 2
-b
+data 9
+b master
 from :2
 M 100644 :1 b
 
@@ -36,10 +36,11 @@ commit refs/heads/branch1
 mark :5
 author Owen Stephens <git@owenstephens.co.uk> 1308064734 +0100
 committer Owen Stephens <git@owenstephens.co.uk> 1308064734 +0100
-data 2
-b
+data 10
+b branch1
 from :2
 M 100644 :4 b
+M 100644 :4 c
 
 blob
 mark :6
@@ -69,4 +70,4 @@ set -ev
 rm -rf R R-branch_branch1
 echo "$DATA" | darcs-fastconvert import --create=yes R
 
-[[ -e R && -e R/a && -e R/b ]] 
+[[ -e R && -e R/a && -e R/b && -e R/c ]]
