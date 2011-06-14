@@ -97,15 +97,13 @@ data Object = Blob (Maybe Int) Content
 data ObjectStream = Elem B.ByteString Object
                   | End
 
-type Ancestors = (Marked, [Int])
-
 data State p where
     Toplevel :: Marked -> Branch -> State p
-    InCommit :: Marked -> Ancestors -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
+    InCommit :: Marked -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
-  show (InCommit _ _ _ _ _ _) = "InCommit"
+  show (InCommit _ _ _ _ _ ) = "InCommit"
 
 fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat -> IO Marks
 fastImport inHandle printer repodir fmt =
@@ -156,7 +154,7 @@ fastImport' repodir inHandle printer repo marks initial = do
         handleEndOfStream state = do
           -- We won't necessarily be InCommit at the EOS.
           case state of
-            s@(InCommit _ _ _ _ _ _) -> finalizeCommit s
+            s@(InCommit _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
           -- The stream may not reset us to master, so do it manually.
           restoreFromBranch $ BC.pack "refs/heads/master"
@@ -294,12 +292,16 @@ fastImport' repodir inHandle printer repo marks initial = do
           modify $ \s -> s { tree = tree' }
           return $ T.filter nodarcs tree'
 
-        diffCurrent (InCommit mark ancestors branch start ps info) = do
+        diffCurrent (InCommit mark branch start ps info) = do
           current <- updateHashes
           Sealed diff
                 <- unFreeLeft `fmap` liftIO (treeDiff (const TextFile) start current)
-          return $ InCommit mark ancestors branch current (reverseFL diff +<+ ps) info
+          return $ InCommit mark branch current (reverseFL diff +<+ ps) info
         diffCurrent _ = error "This is never valid outside of a commit."
+
+        mergeIfNecessary :: Merges -> TreeIO ()
+        mergeIfNecessary [] = return ()
+        mergeIfNecessary _  = return ()
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
@@ -326,36 +328,36 @@ fastImport' repodir inHandle printer repo marks initial = do
           return x
 
         process (Toplevel previous pbranch) (Commit branch mark author message from merges) = do
-          let ancestors = (previous, maybe id (\f -> (f :)) from merges)
           when (pbranch /= branch) $
             switchBranch previous pbranch (MarkId `fmap` from)
+          mergeIfNecessary merges
           info <- makeinfo author message False
           startstate <- updateHashes
-          return $ InCommit mark ancestors branch startstate NilRL info
+          return $ InCommit mark branch startstate NilRL info
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
+        process s@(InCommit _ _ _ _ _) (Modify (ModifyMark m) path) = do
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           diffCurrent s
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
+        process s@(InCommit _ _ _ _ _) (Modify (Inline bits) path) = do
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           diffCurrent s
 
-        process (InCommit mark ancestors branch _ ps info) (Delete path) = do
+        process (InCommit mark branch _ ps info) (Delete path) = do
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
           current <- updateHashes
-          return $ InCommit mark ancestors branch current (rmPatch :<: ps) info
+          return $ InCommit mark branch current (rmPatch :<: ps) info
 
-        process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
+        process s@(InCommit _ _ _ _ _) (Copy from to) = do
           let unpackFloat = floatPath.BC.unpack
           TM.copy (unpackFloat from) (unpackFloat to)
           -- We can't tell Darcs that a file has been copied, so it'll show as
           -- an addfile.
           diffCurrent s
 
-        process (InCommit mark ancestors branch start ps info) (Rename from to) = do
+        process (InCommit mark branch start ps info) (Rename from to) = do
           let uFrom = BC.unpack from
               uTo = BC.unpack to
           targetDirExists <- liftIO $ treeHasDir start uTo
@@ -376,10 +378,10 @@ fastImport' repodir inHandle printer repo marks initial = do
           let movePatches = move uFrom uTo :<: preparePatchesRL
           TM.rename (floatPath uFrom) (floatPath uTo)
           current <- updateHashes
-          return $ InCommit mark ancestors branch current (movePatches +<+ ps) info
+          return $ InCommit mark branch current (movePatches +<+ ps) info
 
         -- When we leave the commit, create a patch for the cumulated prims.
-        process s@(InCommit mark _ branch _ _ _) x = do
+        process s@(InCommit mark branch _ _ _) x = do
           finalizeCommit s
           process (Toplevel mark branch) x
 
@@ -389,17 +391,7 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         finalizeCommit :: RepoPatch p => State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) = error "Cannot finalize commit at toplevel"
-        finalizeCommit (InCommit mark ancestors branch _ ps info) = do
-          case ancestors of
-            (_, []) -> return () -- OK, previous commit is the ancestor
-            (Just n, list)
-              | n `elem` list -> return () -- OK, we base off one of the ancestors
-              | otherwise -> printer $
-                               "WARNING: Linearising non-linear ancestry:" ++
-                               " currently at " ++ show n ++ ", ancestors " ++ show list
-            (Nothing, list) ->
-              printer $ "WARNING: Linearising non-linear ancestry " ++ show list
-
+        finalizeCommit (InCommit mark branch _ ps info) = do
           (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL $ reverseRL ps
           let patch = infopatch info prims
           liftIO $ addToTentativeInventory (extractCache repo)
