@@ -157,7 +157,7 @@ fastImport' repodir inHandle printer repo marks initial = do
             s@(InCommit _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
           -- The stream may not reset us to master, so do it manually.
-          restoreFromBranch $ BC.pack "refs/heads/master"
+          restoreFromBranch "" $ BC.pack "refs/heads/master"
           fullTree <- gets tree
           let branchTree =  fromJust . findTree fullTree $ floatPath "_darcs/branches"
               entries = map ((\(Name n) -> n) . fst) . T.listImmediate $ branchTree
@@ -231,24 +231,24 @@ fastImport' repodir inHandle printer repo marks initial = do
              Nothing -> return () -- Base on current state
              Just newHead' -> case newHead' of
                HashId _ -> error "Cannot branch to commit id"
-               MarkId mark -> restoreFromMark mark
-               BranchName bName -> restoreFromBranch bName
+               MarkId mark -> restoreFromMark "" mark
+               BranchName bName -> restoreFromBranch "" bName
 
-        restoreFromMark m = do
-          restoreInventory $ markInventoryPath m
-          restorePristine $ markPristinePath m
+        restoreFromMark pref m = do
+          restoreInventory pref $ markInventoryPath m
+          restorePristine pref $ markPristinePath m
 
-        restoreFromBranch b = do
-          restoreInventory $ branchInventoryPath b
-          restorePristine $ branchPristinePath b
+        restoreFromBranch pref b = do
+          restoreInventory pref $ branchInventoryPath b
+          restorePristine pref $ branchPristinePath b
 
-        restoreInventory invPath = do
+        restoreInventory pref invPath = do
           inventory <- readFile invPath
-          liftIO $ BL.writeFile "_darcs/tentative_hashed_inventory" inventory
+          liftIO $ BL.writeFile ("_darcs/" ++ pref ++ "tentative_hashed_inventory") inventory
 
-        restorePristine prisPath = do
+        restorePristine pref prisPath = do
           pristine <- TM.readFile prisPath
-          liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
+          liftIO $ BL.writeFile ("_darcs/" ++ pref ++ "tentative_pristine") pristine
           let prefixLen = fromIntegral $ length "pristine:"
               pristineDir = "_darcs/pristine.hashed"
               strictify = B.concat . BL.toChunks
