@@ -14,7 +14,7 @@ import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import Data.Maybe ( isNothing, fromMaybe, fromJust )
-import System.Directory ( doesFileExist, createDirectory, createDirectoryIfMissing, getDirectoryContents, copyFile )
+import System.Directory ( doesFileExist, createDirectory, createDirectoryIfMissing, getDirectoryContents, copyFile, removeFile )
 import System.IO ( Handle )
 import System.FilePath ( (</>) )
 import System.PosixCompat.Files ( createLink )
@@ -23,7 +23,7 @@ import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
 import Darcs.Flags( Compression( .. )
                   , DarcsFlag( UseHashedInventory, UseFormat2 ) )
 import Darcs.Repository ( Repository, withRepoLock, RepoJob(..)
-                        , readTentativeRepo, readRepo
+                        , readTentativeRepo, readRepo, readRepoUsingSpecificInventory
                         , withRepository
                         , createRepository
                         , createPristineDirectoryTree
@@ -36,6 +36,8 @@ import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir, adddir, move )
+import Darcs.Patch.Apply ( Apply(..) )
+import Darcs.Patch.Depends ( newsetUnion, findUncommon, merge2FL )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Prim.Class ( PrimOf )
@@ -43,8 +45,8 @@ import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.Set ( newset2FL )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL)
-import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL, (:\/:)(..), mapFL )
+import Darcs.Witnesses.Sealed ( seal, Sealed(..), unFreeLeft )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import qualified Storage.Hashed.Monad as TM
@@ -314,7 +316,23 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         mergeIfNecessary :: Marked -> Merges -> TreeIO ()
         mergeIfNecessary _ [] = return ()
-        mergeIfNecessary currentMark merges = return ()
+        mergeIfNecessary currentMark merges  = do
+          let cleanupPristineAndInventories :: Int -> TreeIO ()
+              cleanupPristineAndInventories m = liftIO $ do
+                 removeFile $ "_darcs" </> (show m) ++ "tentative_pristine"
+                 removeFile $ "_darcs" </> (show m) ++ "tentative_hashed_inventory"
+              getMarkPatches m = do
+                restoreFromMark (show m) m
+                liftIO $ seal `fmap` readRepoUsingSpecificInventory
+                  (show m ++ "tentative_hashed_inventory") repo
+          (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
+          restoreFromMark "" (fromJust currentMark)
+          us <- liftIO $ readTentativeRepo repo
+          us' :\/: them' <- return $ findUncommon us them
+          (Sealed merged) <- return $ merge2FL us' them'
+          liftIO $ sequence_ $ mapFL (\p -> addToTentativeInventory (extractCache repo) GzipCompression p) merged
+          apply merged
+          mapM_ cleanupPristineAndInventories merges
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
