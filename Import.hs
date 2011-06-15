@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
+{-# LANGUAGE NoMonoLocalBinds, DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
 import Utils
@@ -86,7 +86,7 @@ data Object = Blob (Maybe Int) Content
             | Reset Branch (Maybe Committish)
             | Commit Branch Marked AuthorInfo Message Marked Merges
             | Tag Int AuthorInfo Message
-            | Modify ModifyData B.ByteString -- (mark, hash or content), filename
+            | Modify ModifyData B.ByteString
             | Gitlink B.ByteString
             | Copy B.ByteString B.ByteString -- source/target filenames
             | Rename B.ByteString B.ByteString -- orig/new filenames
@@ -99,13 +99,15 @@ data ObjectStream = Elem B.ByteString Object
 
 data State p where
     Toplevel :: Marked -> Branch -> State p
-    InCommit :: Marked -> Branch -> Tree IO -> RL (PrimOf p) cX cY -> PatchInfo -> State p
+    InCommit :: Marked -> Branch -> Tree IO -> RL (PrimOf p) cX cY
+      -> PatchInfo -> State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
   show (InCommit _ _ _ _ _ ) = "InCommit"
 
-fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat -> IO Marks
+fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat
+  -> IO Marks
 fastImport inHandle printer repodir fmt =
   do createDirectory repodir
      withCurrentDirectory repodir $ do
@@ -116,8 +118,10 @@ fastImport inHandle printer repodir fmt =
          let initState = Toplevel Nothing $ BC.pack "refs/heads/master"
          fastImport' repodir inHandle printer repo emptyMarks initState
 
-fastImportIncremental :: Handle -> (String -> TreeIO ()) -> String -> Marks -> IO Marks
-fastImportIncremental inHandle printer repodir marks = withCurrentDirectory repodir $
+fastImportIncremental :: Handle -> (String -> TreeIO ()) -> String -> Marks
+  -> IO Marks
+fastImportIncremental inHandle printer repodir marks =
+  withCurrentDirectory repodir $
     withRepoLock [] $ RepoJob $ \repo -> do
         -- Read the last mark we processed on a previous import, to prevent non
         -- linear history errors.
@@ -159,13 +163,16 @@ fastImport' repodir inHandle printer repo marks initial = do
           -- The stream may not reset us to master, so do it manually.
           restoreFromBranch "" $ BC.pack "refs/heads/master"
           fullTree <- gets tree
-          let branchTree =  fromJust . findTree fullTree $ floatPath "_darcs/branches"
-              entries = map ((\(Name n) -> n) . fst) . T.listImmediate $ branchTree
+          let branchTree = fromJust . findTree fullTree $
+               floatPath "_darcs/branches"
+              entries = map ((\(Name n) -> n) . fst) . T.listImmediate $
+                branchTree
               branches = filter (/= BC.pack "master") entries
           mapM_ initBranch branches
           (pristine, tree') <- getTentativePristineContents
           liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
-          modify $ \s -> s { tree = tree' } -- dump the right tree, without _darcs
+          -- dump the right tree, without _darcs
+          modify $ \s -> s { tree = tree' }
           return branches
 
         getTentativePristineContents :: TreeIO (BL.ByteString, Tree IO)
@@ -185,7 +192,8 @@ fastImport' repodir inHandle printer repo marks initial = do
             mapM_ (createDirectoryIfMissing True . (bDir </>)) dirs
             BL.writeFile (bDir </> "tentative_hashed_inventory") inventory
             BL.writeFile (bDir </> "tentative_pristine") pristine
-            BL.writeFile (bDir </> "format") $ BL.pack $ unlines ["hashed", "darcs-2"]
+            BL.writeFile (bDir </> "format") $ BL.pack $
+              unlines ["hashed", "darcs-2"]
 
         -- sort marks into buckets, since there can be a *lot* of them
         markpath :: Int -> AnchoredPath
@@ -197,10 +205,12 @@ fastImport' repodir inHandle printer repo marks initial = do
         branchName = BC.drop (length "refs/heads/")
 
         markInventoryPath :: Int -> AnchoredPath
-        markInventoryPath n = markpath n `appendPath` (Name $ BC.pack "inventory")
+        markInventoryPath n = markpath n `appendPath`
+          (Name $ BC.pack "inventory")
 
         markPristinePath :: Int -> AnchoredPath
-        markPristinePath n = markpath n `appendPath` (Name $ BC.pack "pristine")
+        markPristinePath n = markpath n `appendPath`
+          (Name $ BC.pack "pristine")
 
         branchPath :: Branch -> AnchoredPath
         branchPath b = floatPath "_darcs/branches/" `appendPath`
@@ -257,17 +267,20 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         restoreInventory pref invPath = do
           inventory <- readFile invPath
-          liftIO $ BL.writeFile ("_darcs" </> pref ++ "tentative_hashed_inventory") inventory
+          liftIO $ BL.writeFile
+            ("_darcs" </> pref ++ "tentative_hashed_inventory") inventory
 
         restorePristine pref prisPath = do
           pristine <- TM.readFile prisPath
-          liftIO $ BL.writeFile ("_darcs" </> pref ++ "tentative_pristine") pristine
+          liftIO $ BL.writeFile
+            ("_darcs" </> pref ++ "tentative_pristine") pristine
           let prefixLen = fromIntegral $ length "pristine:"
               pristineDir = "_darcs/pristine.hashed"
               strictify = B.concat . BL.toChunks
               hash = decodeBase16 . strictify . BL.drop prefixLen $ pristine
           currentTree <- gets tree
-          prisTree <- liftIO $ readDarcsHashedNosize pristineDir hash >>= T.expand
+          prisTree <- liftIO $
+            readDarcsHashedNosize pristineDir hash >>= T.expand
           let darcsDirPath = floatPath "_darcs"
               darcsDir = SubTree `fmap` findTree currentTree darcsDirPath
               combinedTree = T.modifyTree prisTree darcsDirPath darcsDir
@@ -280,18 +293,26 @@ fastImport' repodir inHandle printer repo marks initial = do
               (author'', date'') = span (/='>') $ BC.unpack author
               date' = dropWhile (`notElem` "0123456789") date''
               author' = author'' ++ ">"
-              date = formatDateTime "%Y%m%d%H%M%S" $ fromMaybe startOfTime (parseDateTime "%s %z" date')
-          liftIO $ patchinfo date (if tag then "TAG " ++ name else name) author' log
+              date = formatDateTime "%Y%m%d%H%M%S" $
+                fromMaybe startOfTime (parseDateTime "%s %z" date')
+          liftIO $ patchinfo date
+            (if tag then "TAG " ++ name else name) author' log
+
+        addToTentativeInv :: (RepoPatch pa) => PatchInfoAnd pa x y
+          -> IO FilePath
+        addToTentativeInv = addToTentativeInventory (extractCache repo)
+          GzipCompression
 
         addtag author msg =
           do info <- makeinfo author msg True
-             gotany <- liftIO $ doesFileExist "_darcs/tentative_hashed_pristine"
-             deps <- if gotany then liftIO $ getTagsRight `fmap` readTentativeRepo repo
+             gotany <- liftIO $
+               doesFileExist "_darcs/tentative_hashed_pristine"
+             deps <- if gotany then liftIO $
+               getTagsRight `fmap` readTentativeRepo repo
                                else return []
              let ident = NilFL :: FL (RealPatch Prim) cX cX
                  patch = adddeps (infopatch info ident) deps
-             liftIO $ addToTentativeInventory (extractCache repo)
-                                              GzipCompression (n2pia patch)
+             liftIO . addToTentativeInv $ n2pia patch
              return ()
 
         -- processing items
@@ -301,14 +322,15 @@ fastImport' repodir inHandle printer repo marks initial = do
                 do hash <- sha256 `fmap` readBlob blob
                    return $ File (T.Blob con hash)
               hashblobs x = return x
-          tree' <- liftIO . T.partiallyUpdateTree hashblobs nodarcs =<< gets tree
+          tree' <- liftIO . T.partiallyUpdateTree hashblobs nodarcs =<<
+            gets tree
           modify $ \s -> s { tree = tree' }
           return $ T.filter nodarcs tree'
 
         diffCurrent (InCommit mark branch start ps info) = do
           current <- updateHashes
-          Sealed diff
-                <- unFreeLeft `fmap` liftIO (treeDiff (const TextFile) start current)
+          Sealed diff <- unFreeLeft `fmap`
+            liftIO (treeDiff (const TextFile) start current)
           return $ InCommit mark branch current (reverseFL diff +<+ ps) info
         diffCurrent _ = error "This is never valid outside of a commit."
 
@@ -327,7 +349,7 @@ fastImport' repodir inHandle printer repo marks initial = do
           us <- liftIO $ readTentativeRepo repo
           us' :\/: them' <- return $ findUncommon us them
           (Sealed merged) <- return $ merge2FL us' them'
-          liftIO $ sequence_ $ mapFL (addToTentativeInventory (extractCache repo) GzipCompression) merged
+          liftIO . sequence_ $ mapFL addToTentativeInv merged
           apply merged
           mapM_ cleanup merges
 
@@ -355,7 +377,8 @@ fastImport' repodir inHandle printer repo marks initial = do
           printer $ "WARNING: Ignoring gitlink " ++ BC.unpack link
           return x
 
-        process (Toplevel previous pbranch) (Commit branch mark author message from merges) = do
+        process (Toplevel previous pbranch)
+          (Commit branch mark author message from merges) = do
           fromMark <- if pbranch /= branch
             then Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
@@ -403,7 +426,7 @@ fastImport' repodir inHandle printer repo marks initial = do
                 let parentPaths = parents $ floatPath uTo
                     missing = filter (isNothing . findTree start) parentPaths
                     missingPaths = nubsort (map (anchorPath "") missing)
-                return $ foldl (\dirPs dir -> adddir dir :<: dirPs) NilRL missingPaths
+                return $ foldl (flip $ (:<:) . adddir) NilRL missingPaths
           let movePatches = move uFrom uTo :<: preparePatchesRL
           TM.rename (floatPath uFrom) (floatPath uTo)
           current <- updateHashes
@@ -419,16 +442,19 @@ fastImport' repodir inHandle printer repo marks initial = do
           fail $ "Unexpected object in state " ++ show state
 
         finalizeCommit :: RepoPatch p => State p -> TreeIO ()
-        finalizeCommit (Toplevel _ _) = error "Cannot finalize commit at toplevel"
+        finalizeCommit (Toplevel _ _) =
+          error "Cannot finalize commit at toplevel"
         finalizeCommit (InCommit mark branch _ ps info) = do
-          (prims :: FL p cX cY)  <- return $ fromPrims $ sortCoalesceFL $ reverseRL ps
+          (prims :: FL p cX cY)  <- return $ fromPrims $
+            sortCoalesceFL $ reverseRL ps
           let patch = infopatch info prims
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)
           case mark of
             Nothing -> return ()
             Just n -> case getMark marks n of
-              Nothing -> liftIO $ modifyIORef marksref $ \m -> addMark m n (patchHash $ n2pia patch)
+              Nothing -> liftIO $ modifyIORef marksref $
+                \m -> addMark m n (patchHash $ n2pia patch)
               Just n' -> die $ "FATAL: Mark already exists: " ++ BC.unpack n'
           stashInventoryAndPristine mark branch
 
@@ -436,7 +462,8 @@ fastImport' repodir inHandle printer repo marks initial = do
         notdot _ = True
 
     check patches (listMarks marks)
-    (branches, _) <- hashedTreeIO (go initial B.empty) initPristine "_darcs/pristine.hashed"
+    (branches, _) <- hashedTreeIO (go initial B.empty) initPristine
+      "_darcs/pristine.hashed"
     finalizeRepositoryChanges repo
     let pristineDir = "_darcs" </> "pristine.hashed"
     pristines <- filter notdot `fmap` getDirectoryContents pristineDir
@@ -559,11 +586,13 @@ parseObject inHandle = next mbObject
                       mark <- p_modifyData
                       path <- line
                       case mark of
-                        ModifyHash hash | mode == BC.pack "160000" -> return $ Gitlink hash
+                        ModifyHash hash | mode == BC.pack "160000" ->
+                          return $ Gitlink hash
                                     | otherwise -> fail ":(("
                         _ -> return $ Modify mark path
 
-        next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString -> IO ObjectStream
+        next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString
+          -> IO ObjectStream
         next parser rest =
           do chunk <- if B.null rest then liftIO $ B.hGet inHandle (64 * 1024)
                                      else return rest
@@ -573,6 +602,7 @@ parseObject inHandle = next mbObject
              A.Done rest result -> return . maybe End (Elem rest) $ result
              A.Partial cont -> next cont B.empty
              A.Fail _ ctx err -> do
-               let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++ "\n=== end chunk ===="
-               fail $ "Error parsing stream. " ++ err ++ ch ++ "\nContext: " ++ show ctx
-
+               let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++
+                        "\n=== end chunk ===="
+               fail $ "Error parsing stream. " ++ err ++ ch ++
+                 "\nContext: " ++ show ctx

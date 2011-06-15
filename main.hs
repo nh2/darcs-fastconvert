@@ -26,10 +26,12 @@ data Cmd = Import { repo :: String
 instance Attributes Cmd where
   attributes _ =
     repo %> [ Positional 0 ] %% group "Options"
-    [ format     %> [ Help "repository type to create: darcs-2 (default) or hashed"
+    [ format     %> [ Help
+      "repository type to create: darcs-2 (default) or hashed"
                     , Default Darcs2Format ]
     , create     %> [ Help "create a new repository", Default True ]
-    , readMarks  %> [ Help "continue conversion, previously checkpointed by --write-marks"
+    , readMarks  %> [ Help
+      "continue conversion, previously checkpointed by --write-marks"
                     , ArgHelp "FILE" ]
     , writeMarks %> [ Help "checkpoint conversion to continue it later"
                     , ArgHelp "FILE" ]
@@ -52,8 +54,10 @@ instance Attributes Cmd where
 
 instance RecordCommand Cmd where
   mode_summary Import {} = "Import a git-fast-export dump into darcs."
-  mode_summary Export {} = "Export a darcs repository to a git-fast-import stream."
-  mode_summary CreateBridge {} = "Create a darcs bridge, importing from git or darcs."
+  mode_summary Export {} =
+    "Export a darcs repository to a git-fast-import stream."
+  mode_summary CreateBridge {} =
+    "Create a darcs bridge, importing from git or darcs."
   mode_summary Sync   {} = "Sync an existing darcs bridge."
 
 runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()

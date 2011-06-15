@@ -45,15 +45,18 @@ next :: (Effect p) => [PatchInfo] -> Int -> (PatchInfoAnd p) x y -> Int
 next tags n p = if inOrderTag tags p then n else n + 1
 
 tagName :: (PatchInfoAnd p) x y -> String
-tagName = map (cleanup " .") . drop 4 . patchName -- FIXME many more chars are probably illegal
-  where cleanup bad x | x `elem` bad = '_'
-                      | otherwise = x
+tagName = map cleanup . drop 4 . patchName
+  where cleanup x | x `elem` bad = '_'
+                  | otherwise = x
+        -- FIXME many more chars are probably illegal
+        bad = " ."
 
 patchName :: (PatchInfoAnd p) x y -> String
 patchName = piName . info
 
 patchDate :: (PatchInfoAnd p) x y -> String
-patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime . piDate . info
+patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime .
+  piDate . info
 
 patchAuthor :: (PatchInfoAnd p) x y -> String
 patchAuthor p = case span (/='<') author of
@@ -80,16 +83,19 @@ dumpFiles printer files = forM_ files $ \file -> do
   isdir <- directoryExists file
   when isfile $ do
     bits <- readFile file
-    dumpBits printer [ BLU.fromString $ "M 100644 inline " ++ anchorPath "" file
+    dumpBits printer [ BLU.fromString $
+                        "M 100644 inline " ++ anchorPath "" file
                      , BLU.fromString $ "data " ++ show (BL.length bits)
                      , bits ]
   when isdir $ do tt <- gets tree -- ick
                   let subs = [ file `appendPath` n | (n, _) <-
                                   listImmediate $ fromJust $ findTree tt file ]
                   dumpFiles printer subs
-  when (not isfile && not isdir) $ printer $ BLU.fromString $ "D " ++ anchorPath "" file
+  when (not isfile && not isdir) $
+    printer $ BLU.fromString $ "D " ++ anchorPath "" file
 
-dumpPatch :: (BLU.ByteString -> TreeIO ()) -> ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int -> TreeIO ()
+dumpPatch :: (BLU.ByteString -> TreeIO ()) -> ((PatchInfoAnd p) x y -> Int
+  -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int -> TreeIO ()
 dumpPatch printer mark p n =
   do dumpBits printer [ BLC.pack $ "progress " ++ show n ++ ": " ++ patchName p
                       , "commit refs/heads/master" ]
@@ -98,9 +104,11 @@ dumpPatch printer mark p n =
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
         , BLU.fromString $ "data " ++ show (BL.length $ patchMessage p)
         , patchMessage p ]
-     when (n > 1) $ dumpBits printer [ BLU.fromString $ "from :" ++ show (n - 1) ]
+     when (n > 1) $
+       dumpBits printer [ BLU.fromString $ "from :" ++ show (n - 1) ]
 
-dumpTag :: (BLU.ByteString -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int -> TreeIO ()
+dumpTag :: (BLU.ByteString -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int
+  -> TreeIO ()
 dumpTag printer p n = dumpBits printer
     [ BLU.fromString $ "progress TAG " ++ tagName p
     , BLU.fromString $ "tag " ++ tagName p -- FIXME is this valid?
@@ -109,8 +117,9 @@ dumpTag printer p n = dumpBits printer
     , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) - 4)
     , BL.drop 4 $ patchMessage p ]
 
-dumpPatches :: (BLU.ByteString -> TreeIO ()) -> (RepoPatch p) => [PatchInfo] -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
-                 -> Int -> FL (PatchInfoAnd p) x y -> TreeIO ()
+dumpPatches :: (BLU.ByteString -> TreeIO ()) -> (RepoPatch p) => [PatchInfo]
+  -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ()) -> Int
+  -> FL (PatchInfoAnd p) x y -> TreeIO ()
 dumpPatches _ _ _ _ NilFL = return ()
 dumpPatches printer tags mark n (p:>:ps) = do
   apply p
@@ -122,9 +131,11 @@ dumpPatches printer tags mark n (p:>:ps) = do
 
 fastExport :: (BLU.ByteString -> TreeIO ()) -> String -> Marks -> IO Marks
 fastExport printer repodir marks =
-  withCurrentDirectory repodir $ withRepository [] $ RepoJob $ \repo -> fastExport' printer repo marks
+  withCurrentDirectory repodir $ withRepository [] $ RepoJob $
+    \repo -> fastExport' printer repo marks
 
-fastExport' :: (BLU.ByteString -> TreeIO ()) -> (RepoPatch p) => Repository p r u r -> Marks -> IO Marks
+fastExport' :: (BLU.ByteString -> TreeIO ()) -> (RepoPatch p) =>
+  Repository p r u r -> Marks -> IO Marks
 fastExport' printer repo marks = do
   patchset <- readRepo repo
   marksref <- newIORef marks
@@ -132,13 +143,15 @@ fastExport' printer repo marks = do
       tags = optimizedTags patchset
       mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
       mark p n = do printer $ BLU.fromString $ "mark :" ++ show n
-                    liftIO $ modifyIORef marksref $ \m -> addMark m n (patchHash p)
+                    liftIO $ modifyIORef marksref $
+                      \m -> addMark m n (patchHash p)
       checkOne :: (RepoPatch p) => Int -> PatchInfoAnd p x y -> TreeIO ()
       checkOne n p = do apply p
                         unless (inOrderTag tags p ||
                                 (getMark marks n == Just (patchHash p))) $
                           die $ "FATAL: Marks do not correspond: expected " ++
-                                show (getMark marks n) ++ ", got " ++ BSC.unpack (patchHash p)
+                                show (getMark marks n) ++ ", got "
+                                ++ BSC.unpack (patchHash p)
 
       -- |check drops any patches that have already been exported (as
       -- determined by the mark-number passed in), first checking they apply
@@ -146,15 +159,18 @@ fastExport' printer repo marks = do
       -- FlippedSeal FL, since we may drop some patches from the start of the
       -- passed-in FL (we also may not drop any), so the caller cannot know the
       -- returned initial context.
-      check :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) x y -> TreeIO (Int, FlippedSeal (FL (PatchInfoAnd p)) y)
+      check :: (RepoPatch p) => Int -> FL (PatchInfoAnd p) x y
+        -> TreeIO (Int, FlippedSeal (FL (PatchInfoAnd p)) y)
       check _ NilFL = return (1, flipSeal NilFL)
       check n allps@(p:>:ps)
         | n <= lastMark marks = checkOne n p >> check (next tags n p) ps
         | lastMark marks == 0 = return (1, flipSeal allps)
         | otherwise = return (n, flipSeal allps)
 
-  ((n, FlippedSeal patches'), newTree) <- hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
-  hashedTreeIO (dumpPatches printer tags mark n patches') newTree "_darcs/pristine.hashed"
+  ((n, FlippedSeal patches'), newTree) <-
+    hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
+  hashedTreeIO (dumpPatches printer tags mark n patches') newTree
+    "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
   current <- readHashedPristineRoot repo
@@ -165,4 +181,3 @@ optimizedTags (PatchSet _ ts) = go ts
   where go :: RL(Tagged t1) x y -> [PatchInfo]
         go (Tagged t _ _ :<: ts') = info t : go ts'
         go NilRL = []
-
