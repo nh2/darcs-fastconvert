@@ -1,34 +1,36 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module Bridge( createBridge, syncBridge, VCSType(..) ) where
 
-import Utils ( die )
-import Marks ( handleCmdMarks )
-import Import ( fastImportIncremental )
 import Export ( fastExport )
+import Import ( fastImportIncremental )
+import Marks ( handleCmdMarks )
+import Utils ( die )
 
 import Control.Monad ( when, unless )
 import Control.Monad.Error ( join )
-import Control.Monad.Trans.Error
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Error
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.ConfigFile ( emptyCP, set, to_string, readfile, get )
 import Data.Data ( Data, Typeable )
 import Data.Either.Utils ( forceEither )
-import Darcs.Lock ( withLockCanFail )
-import System.Directory ( createDirectory, canonicalizePath, setCurrentDirectory, getCurrentDirectory, copyFile, removeFile, renameFile, doesDirectoryExist )
+import System.Directory ( createDirectory, canonicalizePath
+                        , setCurrentDirectory, getCurrentDirectory, copyFile
+                        , removeFile, renameFile, doesDirectoryExist )
 import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
 import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
-import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
+import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess )
 
 import Darcs.Commands ( commandCommand )
 import qualified Darcs.Commands.Get as DCG
+import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2, Quiet) )
+import Darcs.Lock ( withLockCanFail )
 import Darcs.Repository ( amNotInRepository, createRepository )
 import Darcs.Repository.Prefs ( addToPreflist )
-import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2, Quiet) )
 import Darcs.Utils ( withCurrentDirectory )
 
 data VCSType = BareGit

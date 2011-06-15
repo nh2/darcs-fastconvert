@@ -2,15 +2,15 @@
 module Main ( main ) where
 
 import Control.Monad (when)
-import Data.List ( isPrefixOf, isSuffixOf, sort )
 import qualified Data.ByteString.Char8 as B
+import Data.List ( isPrefixOf, isSuffixOf, sort )
+import qualified Shellish
+import Shellish hiding ( liftIO, run )
 import System.Console.CmdLib
 import System.FilePath( takeDirectory, takeBaseName, isAbsolute )
 import System.IO( hSetBinaryMode, stdin, stdout, stderr )
 import Test.Framework.Providers.API
 import Test.Framework
-import Shellish hiding ( liftIO, run )
-import qualified Shellish
 
 data Running = Running deriving Show
 data Result = Success | Skipped | Failed String
@@ -26,7 +26,7 @@ instance TestResultlike Running Result where
   testSucceeded _ = False
 
 data ShellTest = ShellTest { testfile :: FilePath
-                           , testdir  :: Maybe FilePath 
+                           , testdir  :: Maybe FilePath
                            , _darcspath :: FilePath
                            }
 
@@ -93,14 +93,14 @@ instance Attributes Config where
 data DarcsFCTest = DarcsFCTest deriving Typeable
 instance Command DarcsFCTest (Record Config) where
   run _ conf _ = do
-    let args = [ "-j", show $ threads conf ] 
+    let args = [ "-j", show $ threads conf ]
              ++ concat [ ["-t", x ] | x <- tests conf ]
              ++ [ "--plain" | True <- [plain conf] ]
     case testDir conf of
        Nothing -> return ()
        Just d  -> do e <- shellish (test_e d)
                      when e $ fail ("Directory " ++ d ++ " already exists. Cowardly exiting")
-    tests <- shellish $ findShell (darcs conf) (testDir conf) 
+    tests <- shellish $ findShell (darcs conf) (testDir conf)
     defaultMainWithArgs tests args
 
 main :: IO ()

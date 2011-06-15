@@ -1,10 +1,13 @@
 {-# LANGUAGE GADTs, OverloadedStrings, Rank2Types #-}
 module Export( fastExport ) where
 
-import Prelude hiding ( readFile )
-
 import Marks
+import Utils
 
+import Control.Monad ( when, forM_, unless )
+import Control.Monad.Trans ( liftIO )
+import Control.Monad.State.Strict( gets )
+import Control.Exception( finally )
 import Data.Maybe ( catMaybes, fromJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Char8 as BSC
@@ -12,12 +15,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.ByteString.Lazy.UTF8 as BLU
 import Data.IORef ( newIORef, modifyIORef, readIORef )
-
-import Control.Monad ( when, forM_, unless )
-import Control.Monad.Trans ( liftIO )
-import Control.Monad.State.Strict( gets )
-import Control.Exception( finally )
-
+import Prelude hiding ( readFile )
 import System.Time ( toClockTime )
 
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info )
@@ -33,7 +31,6 @@ import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..) )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Utils ( withCurrentDirectory )
-import Utils
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import Storage.Hashed.Darcs
@@ -81,7 +78,7 @@ dumpFiles :: (BLU.ByteString -> TreeIO ()) -> [AnchoredPath] -> TreeIO ()
 dumpFiles printer files = forM_ files $ \file -> do
   isfile <- fileExists file
   isdir <- directoryExists file
-  when isfile $ do 
+  when isfile $ do
     bits <- readFile file
     dumpBits printer [ BLU.fromString $ "M 100644 inline " ++ anchorPath "" file
                      , BLU.fromString $ "data " ++ show (BL.length bits)
@@ -134,7 +131,7 @@ fastExport' printer repo marks = do
   let patches = newset2FL patchset
       tags = optimizedTags patchset
       mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
-      mark p n = do printer $ BLU.fromString $ "mark :" ++ show n 
+      mark p n = do printer $ BLU.fromString $ "mark :" ++ show n
                     liftIO $ modifyIORef marksref $ \m -> addMark m n (patchHash p)
       checkOne :: (RepoPatch p) => Int -> PatchInfoAnd p x y -> TreeIO ()
       checkOne n p = do apply p

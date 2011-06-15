@@ -1,50 +1,57 @@
 {-# LANGUAGE DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
-import Prelude hiding ( readFile, lex, log )
+import Utils
+import Marks
+
+import qualified Data.Attoparsec.Char8 as A
+import Data.Attoparsec.Char8( (<?>) )
 import Data.Data
 import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.IORef ( newIORef, modifyIORef, readIORef )
-
-import Control.Monad ( when, forM_ )
 import Control.Applicative ( Alternative, (<|>) )
+import Control.Monad ( when, forM_ )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import Data.Maybe ( isNothing, fromMaybe, fromJust )
-import System.Directory ( doesFileExist, createDirectory, createDirectoryIfMissing, getDirectoryContents, copyFile, removeFile )
+import Prelude hiding ( readFile, lex, log )
+import System.Directory ( doesFileExist, createDirectory
+                        , createDirectoryIfMissing, getDirectoryContents
+                        , copyFile, removeFile )
 import System.IO ( Handle )
 import System.FilePath ( (</>) )
 import System.PosixCompat.Files ( createLink )
 
-import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
+import Darcs.Diff( treeDiff )
 import Darcs.Flags( Compression( .. )
                   , DarcsFlag( UseHashedInventory, UseFormat2 ) )
 import Darcs.Repository ( Repository, withRepoLock, RepoJob(..)
-                        , readTentativeRepo, readRepo, readRepoUsingSpecificInventory
-                        , withRepository
-                        , createRepository
-                        , createPristineDirectoryTree
-                        , finalizeRepositoryChanges
-                        , cleanRepository )
-import Darcs.Repository.State( readRecorded )
-
+                        , readTentativeRepo, readRepo
+                        , readRepoUsingSpecificInventory , withRepository
+                        , createRepository , createPristineDirectoryTree
+                        , finalizeRepositoryChanges , cleanRepository )
 import Darcs.Repository.HashedRepo ( addToTentativeInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
-
-import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir, adddir, move )
+import Darcs.Repository.State( readRecorded )
+import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir
+                   , adddir, move )
 import Darcs.Patch.Apply ( Apply(..) )
-import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon, merge2FL )
-import Darcs.Patch.V2 ( RealPatch )
-import Darcs.Patch.Prim.V1 ( Prim )
-import Darcs.Patch.Prim.Class ( PrimOf )
-import Darcs.Patch.Prim ( sortCoalesceFL )
+import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
+                           , merge2FL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
+import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
+import Darcs.Patch.Prim ( sortCoalesceFL )
+import Darcs.Patch.Prim.Class ( PrimOf )
+import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Set ( newset2FL )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL, (:\/:)(..), mapFL )
+import Darcs.Patch.V2 ( RealPatch )
+import Darcs.Utils ( nubsort, withCurrentDirectory, treeHasDir, treeHasFile )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL
+                               , (:\/:)(..), mapFL )
 import Darcs.Witnesses.Sealed ( seal, Sealed(..), unFreeLeft )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
@@ -55,14 +62,6 @@ import Storage.Hashed.Hash( decodeBase16, encodeBase16, sha256, Hash(..) )
 import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..), findTree )
 import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
                                   , appendPath, parents, anchorPath )
-import Darcs.Diff( treeDiff )
-import Darcs.Utils ( nubsort, withCurrentDirectory, treeHasDir, treeHasFile )
-
-import Utils
-import Marks
-
-import qualified Data.Attoparsec.Char8 as A
-import Data.Attoparsec.Char8( (<?>) )
 
 data RepoFormat = Darcs2Format | HashedFormat deriving (Eq, Data, Typeable)
 

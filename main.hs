@@ -3,10 +3,11 @@ import qualified Marks
 import Import
 import Export
 import Bridge
-import System.Console.CmdLib
+
 import Control.Monad.Trans ( liftIO )
-import System.IO ( stdin )
 import qualified Data.ByteString.Lazy as BL
+import System.Console.CmdLib
+import System.IO ( stdin )
 
 data Cmd = Import { repo :: String
                   , format :: RepoFormat

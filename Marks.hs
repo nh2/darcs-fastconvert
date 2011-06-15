@@ -1,7 +1,8 @@
 module Marks where
-import Prelude hiding ( id, lines )
+
 import qualified Data.IntMap as M
 import qualified Data.ByteString.Char8 as BS
+import Prelude hiding ( id, lines )
 import System.Directory( removeFile )
 
 type Marks = M.IntMap BS.ByteString
