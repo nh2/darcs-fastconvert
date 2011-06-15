@@ -59,20 +59,33 @@ instance RecordCommand Cmd where
 runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
 runCmdWithMarks c = Marks.handleCmdMarks (readMarks c) (writeMarks c)
 
-handleCmd :: Cmd -> IO ()
-handleCmd c = case c of
-  Import {} | create c -> case readMarks c of
-               [] -> format c `seq` -- avoid late failure
-                       runCmdWithMarks c (const $ fastImport stdin (liftIO . putStrLn) (repo c) (format c))
-               _  -> die "cannot create repo, with existing marksfile."
-            | otherwise -> runCmdWithMarks c $ fastImportIncremental stdin (liftIO . putStrLn) (repo c)
-  Export {} -> runCmdWithMarks c $ fastExport (liftIO . BL.putStrLn) (repo c)
-  CreateBridge {} -> case inputRepo c of
-        [] -> die "missing input-repo argument."
-        r  -> createBridge r (clone c)
-  Sync {}   -> case bridgePath c of
-        [] -> die "missing bridge-path argument."
-        b  -> syncBridge False b (repoType c)
+
+handleImport :: Cmd -> IO ()
+handleImport c | create c =
+  case readMarks c of
+    [] -> format c `seq` runCmdWithMarks c
+      (const $ fastImport stdin (liftIO . putStrLn) (repo c) (format c))
+    _  -> die "cannot create repo, with existing marksfile."
+
+handleImport c = runCmdWithMarks c $
+  fastImportIncremental stdin (liftIO . putStrLn) (repo c)
+
+handleExport :: Cmd -> IO ()
+handleExport c = runCmdWithMarks c $ fastExport (liftIO . BL.putStrLn) (repo c)
+
+handleCreateBridge :: Cmd -> IO ()
+handleCreateBridge c = case inputRepo c of
+  [] -> die "missing input-repo argument."
+  r  -> createBridge r (clone c)
+
+handleSync :: Cmd -> IO ()
+handleSync c = case bridgePath c of
+  [] -> die "missing bridge-path argument."
+  b  -> syncBridge False b (repoType c)
 
 main :: IO ()
-main = getArgs >>= dispatchR [] >>= handleCmd
+main = getArgs >>= dispatchR [] >>= \c -> case c of
+  Import {} -> handleImport c
+  Export {} -> handleExport c
+  CreateBridge {} -> handleCreateBridge c
+  Sync {}   -> handleSync c
