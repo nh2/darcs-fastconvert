@@ -37,11 +37,10 @@ import Darcs.Repository.Prefs( FileType(..) )
 
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir, adddir, move )
 import Darcs.Patch.Apply ( Apply(..) )
-import Darcs.Patch.Depends ( newsetUnion, findUncommon, merge2FL )
+import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon, merge2FL )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Prim.Class ( PrimOf )
-import Darcs.Patch.Depends ( getTagsRight )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.Set ( newset2FL )
@@ -317,10 +316,9 @@ fastImport' repodir inHandle printer repo marks initial = do
         mergeIfNecessary :: Marked -> Merges -> TreeIO ()
         mergeIfNecessary _ [] = return ()
         mergeIfNecessary currentMark merges  = do
-          let cleanupPristineAndInventories :: Int -> TreeIO ()
-              cleanupPristineAndInventories m = liftIO $ do
-                 removeFile $ "_darcs" </> (show m) ++ "tentative_pristine"
-                 removeFile $ "_darcs" </> (show m) ++ "tentative_hashed_inventory"
+          let cleanup :: Int -> TreeIO ()
+              cleanup m = liftIO $ forM_ ["pristine", "hashed_inventory"] $
+                   removeFile . (("_darcs" </> show m ++ "tentative_") ++)
               getMarkPatches m = do
                 restoreFromMark (show m) m
                 liftIO $ seal `fmap` readRepoUsingSpecificInventory
@@ -330,9 +328,9 @@ fastImport' repodir inHandle printer repo marks initial = do
           us <- liftIO $ readTentativeRepo repo
           us' :\/: them' <- return $ findUncommon us them
           (Sealed merged) <- return $ merge2FL us' them'
-          liftIO $ sequence_ $ mapFL (\p -> addToTentativeInventory (extractCache repo) GzipCompression p) merged
+          liftIO $ sequence_ $ mapFL (addToTentativeInventory (extractCache repo) GzipCompression) merged
           apply merged
-          mapM_ cleanupPristineAndInventories merges
+          mapM_ cleanup merges
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
@@ -359,7 +357,7 @@ fastImport' repodir inHandle printer repo marks initial = do
           return x
 
         process (Toplevel previous pbranch) (Commit branch mark author message from merges) = do
-          fromMark <- if (pbranch /= branch)
+          fromMark <- if pbranch /= branch
             then Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
           mergeIfNecessary fromMark merges
