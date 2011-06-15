@@ -259,11 +259,11 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         restoreInventory pref invPath = do
           inventory <- readFile invPath
-          liftIO $ BL.writeFile ("_darcs/" ++ pref ++ "tentative_hashed_inventory") inventory
+          liftIO $ BL.writeFile ("_darcs" </> pref ++ "tentative_hashed_inventory") inventory
 
         restorePristine pref prisPath = do
           pristine <- TM.readFile prisPath
-          liftIO $ BL.writeFile ("_darcs/" ++ pref ++ "tentative_pristine") pristine
+          liftIO $ BL.writeFile ("_darcs" </> pref ++ "tentative_pristine") pristine
           let prefixLen = fromIntegral $ length "pristine:"
               pristineDir = "_darcs/pristine.hashed"
               strictify = B.concat . BL.toChunks
