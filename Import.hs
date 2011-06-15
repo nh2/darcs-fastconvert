@@ -202,13 +202,21 @@ fastImport' repodir inHandle printer repo marks initial = do
         markPristinePath :: Int -> AnchoredPath
         markPristinePath n = markpath n `appendPath` (Name $ BC.pack "pristine")
 
+        branchPath :: Branch -> AnchoredPath
+        branchPath b = floatPath "_darcs/branches/" `appendPath`
+          Name (branchName b)
+
         branchInventoryPath :: Branch -> AnchoredPath
-        branchInventoryPath b = floatPath "_darcs/branches/" `appendPath`
-          Name (branchName b) `appendPath` Name (BC.pack "inventory")
+        branchInventoryPath b = branchPath b `appendPath`
+          Name (BC.pack "tentative_hashed_inventory")
 
         branchPristinePath :: Branch -> AnchoredPath
-        branchPristinePath b = floatPath "_darcs/branches/" `appendPath`
-          Name (branchName b) `appendPath` Name (BC.pack "pristine")
+        branchPristinePath b = branchPath b `appendPath`
+          Name (BC.pack "tentative_pristine")
+
+        branchMarkPath :: Branch -> AnchoredPath
+        branchMarkPath b = branchPath b `appendPath`
+          Name (BC.pack "last_mark")
 
         stashInventoryAndPristine :: Marked -> Branch -> TreeIO ()
         stashInventoryAndPristine n branch = do
@@ -219,16 +227,17 @@ fastImport' repodir inHandle printer repo marks initial = do
           case n of
             Nothing -> return ()
             Just mark -> do
+              TM.writeFile (branchMarkPath branch) $ BL.pack $ show mark
               TM.writeFile (markInventoryPath mark) inventory
               TM.writeFile (markPristinePath mark) pristine
           TM.writeFile (branchInventoryPath branch) inventory
           TM.writeFile (branchPristinePath branch) pristine
 
-        switchBranch :: Marked -> Branch -> Maybe Committish -> TreeIO ()
+        switchBranch :: Marked -> Branch -> Maybe Committish -> TreeIO Int
         switchBranch currentMark currentBranch newHead = do
           stashInventoryAndPristine currentMark currentBranch
           case newHead of
-             Nothing -> return () -- Base on current state
+             Nothing -> return (fromJust currentMark) -- Base on current state
              Just newHead' -> case newHead' of
                HashId _ -> error "Cannot branch to commit id"
                MarkId mark -> restoreFromMark "" mark
@@ -237,10 +246,14 @@ fastImport' repodir inHandle printer repo marks initial = do
         restoreFromMark pref m = do
           restoreInventory pref $ markInventoryPath m
           restorePristine pref $ markPristinePath m
+          return m
 
         restoreFromBranch pref b = do
           restoreInventory pref $ branchInventoryPath b
           restorePristine pref $ branchPristinePath b
+          branchMark <- TM.readFile $ branchMarkPath b
+          let Just (m, _) = BL.readInt branchMark
+          return m
 
         restoreInventory pref invPath = do
           inventory <- readFile invPath
@@ -299,9 +312,9 @@ fastImport' repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch current (reverseFL diff +<+ ps) info
         diffCurrent _ = error "This is never valid outside of a commit."
 
-        mergeIfNecessary :: Merges -> TreeIO ()
-        mergeIfNecessary [] = return ()
-        mergeIfNecessary _  = return ()
+        mergeIfNecessary :: Marked -> Merges -> TreeIO ()
+        mergeIfNecessary _ [] = return ()
+        mergeIfNecessary currentMark merges = return ()
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
@@ -328,9 +341,10 @@ fastImport' repodir inHandle printer repo marks initial = do
           return x
 
         process (Toplevel previous pbranch) (Commit branch mark author message from merges) = do
-          when (pbranch /= branch) $
-            switchBranch previous pbranch (MarkId `fmap` from)
-          mergeIfNecessary merges
+          fromMark <- if (pbranch /= branch)
+            then Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
+            else return previous
+          mergeIfNecessary fromMark merges
           info <- makeinfo author message False
           startstate <- updateHashes
           return $ InCommit mark branch startstate NilRL info
