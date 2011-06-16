@@ -72,6 +72,8 @@ type AuthorInfo = B.ByteString
 type Message = B.ByteString
 type Content = B.ByteString
 
+data ParsedBranchName = ParsedBranchName B.ByteString deriving (Show, Eq)
+
 data ModifyData = ModifyMark Int
                 | ModifyHash B.ByteString
                 | Inline Content
@@ -83,8 +85,8 @@ data Committish = MarkId Int
                 deriving Show
 
 data Object = Blob (Maybe Int) Content
-            | Reset Branch (Maybe Committish)
-            | Commit Branch Marked AuthorInfo Message Marked Merges
+            | Reset ParsedBranchName (Maybe Committish)
+            | Commit ParsedBranchName Marked AuthorInfo Message Marked Merges
             | Tag Int AuthorInfo Message
             | Modify ModifyData B.ByteString
             | Gitlink B.ByteString
@@ -98,13 +100,16 @@ data ObjectStream = Elem B.ByteString Object
                   | End
 
 data State p where
-    Toplevel :: Marked -> Branch -> State p
-    InCommit :: Marked -> Branch -> Tree IO -> RL (PrimOf p) cX cY
+    Toplevel :: Marked -> ParsedBranchName -> State p
+    InCommit :: Marked -> ParsedBranchName -> Tree IO -> RL (PrimOf p) cX cY
       -> PatchInfo -> State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
   show (InCommit _ _ _ _ _ ) = "InCommit"
+
+masterBranchName :: ParsedBranchName
+masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
 
 fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat
   -> IO Marks
@@ -115,7 +120,7 @@ fastImport inHandle printer repodir fmt =
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
-         let initState = Toplevel Nothing $ BC.pack "refs/heads/master"
+         let initState = Toplevel Nothing $ masterBranchName
          fastImport' repodir inHandle printer repo emptyMarks initState
 
 fastImportIncremental :: Handle -> (String -> TreeIO ()) -> String -> Marks
@@ -128,7 +133,7 @@ fastImportIncremental inHandle printer repodir marks =
         let ancestor = case lastMark marks of
                 0 -> Nothing
                 n -> Just n
-            initState = Toplevel ancestor $ BC.pack "refs/heads/master"
+            initState = Toplevel ancestor $ masterBranchName
         fastImport' repodir inHandle printer repo marks initState
 
 fastImport' :: forall p r u . (RepoPatch p) => FilePath -> Handle ->
@@ -143,8 +148,6 @@ fastImport' repodir inHandle printer repo marks initial = do
           when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
           check ps ms
         check _ _ = die "FATAL: Patch and mark count do not agree."
-
-        branchDir b = concat [repodir, "-branch_", BC.unpack b]
 
         go :: State p -> B.ByteString -> TreeIO [BC.ByteString]
         go state rest = do objectStream <- liftIO $ parseObject inHandle rest
@@ -161,14 +164,14 @@ fastImport' repodir inHandle printer repo marks initial = do
             s@(InCommit _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
           -- The stream may not reset us to master, so do it manually.
-          restoreFromBranch "" $ BC.pack "refs/heads/master"
+          restoreFromBranch "" $ parseBranch $ BC.pack "refs/heads/master"
           fullTree <- gets tree
           let branchTree = fromJust . findTree fullTree $
                floatPath "_darcs/branches"
               entries = map ((\(Name n) -> n) . fst) . T.listImmediate $
                 branchTree
-              branches = filter (/= BC.pack "master") entries
-          mapM_ initBranch branches
+              branches = filter (/= BC.pack "head-master") entries
+          mapM_ (initBranch . ParsedBranchName) branches
           (pristine, tree') <- getTentativePristineContents
           liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
           -- dump the right tree, without _darcs
@@ -181,13 +184,16 @@ fastImport' repodir inHandle printer repo marks initial = do
           let root = encodeBase16 $ treeHash tree'
           return (BL.fromChunks [BC.concat [BC.pack "pristine:", root]], tree')
 
-        initBranch :: B.ByteString -> TreeIO ()
+        topLevelBranchDir :: ParsedBranchName -> FilePath
+        topLevelBranchDir (ParsedBranchName b) = concat
+          [repodir, "-", (BC.unpack b)]
+
+        initBranch :: ParsedBranchName -> TreeIO ()
         initBranch b = do
-          let fullBranchName = BC.pack "refs/heads/" `BC.append` b
-          inventory <- readFile $ branchInventoryPath fullBranchName
-          pristine <- readFile $ branchPristinePath fullBranchName
+          inventory <- readFile $ branchInventoryPath b
+          pristine <- readFile $ branchPristinePath b
           liftIO $ withCurrentDirectory ".." $ do
-            let bDir = branchDir b </> "_darcs"
+            let bDir = topLevelBranchDir b </> "_darcs"
                 dirs = ["inventories", "patches", "pristine.hashed"]
             mapM_ (createDirectoryIfMissing True . (bDir </>)) dirs
             BL.writeFile (bDir </> "tentative_hashed_inventory") inventory
@@ -201,9 +207,6 @@ fastImport' repodir inHandle printer repo marks initial = do
                         `appendPath` (Name $ BC.pack $ show (n `div` 1000))
                         `appendPath` (Name $ BC.pack $ show (n `mod` 1000))
 
-        branchName :: Branch -> BC.ByteString
-        branchName = BC.drop (length "refs/heads/")
-
         markInventoryPath :: Int -> AnchoredPath
         markInventoryPath n = markpath n `appendPath`
           (Name $ BC.pack "inventory")
@@ -212,23 +215,23 @@ fastImport' repodir inHandle printer repo marks initial = do
         markPristinePath n = markpath n `appendPath`
           (Name $ BC.pack "pristine")
 
-        branchPath :: Branch -> AnchoredPath
-        branchPath b = floatPath "_darcs/branches/" `appendPath`
-          Name (branchName b)
+        branchPath :: ParsedBranchName -> AnchoredPath
+        branchPath (ParsedBranchName b) = floatPath "_darcs/branches/"
+          `appendPath` Name b
 
-        branchInventoryPath :: Branch -> AnchoredPath
+        branchInventoryPath :: ParsedBranchName -> AnchoredPath
         branchInventoryPath b = branchPath b `appendPath`
           Name (BC.pack "tentative_hashed_inventory")
 
-        branchPristinePath :: Branch -> AnchoredPath
+        branchPristinePath :: ParsedBranchName -> AnchoredPath
         branchPristinePath b = branchPath b `appendPath`
           Name (BC.pack "tentative_pristine")
 
-        branchMarkPath :: Branch -> AnchoredPath
+        branchMarkPath :: ParsedBranchName -> AnchoredPath
         branchMarkPath b = branchPath b `appendPath`
           Name (BC.pack "last_mark")
 
-        stashInventoryAndPristine :: Marked -> Branch -> TreeIO ()
+        stashInventoryAndPristine :: Marked -> ParsedBranchName -> TreeIO ()
         stashInventoryAndPristine n branch = do
           inventory <- liftIO $ BL.readFile "_darcs/tentative_hashed_inventory"
           (pristine, tree') <- getTentativePristineContents
@@ -243,7 +246,7 @@ fastImport' repodir inHandle printer repo marks initial = do
           TM.writeFile (branchInventoryPath branch) inventory
           TM.writeFile (branchPristinePath branch) pristine
 
-        switchBranch :: Marked -> Branch -> Maybe Committish -> TreeIO Int
+        switchBranch :: Marked -> ParsedBranchName -> Maybe Committish -> TreeIO Int
         switchBranch currentMark currentBranch newHead = do
           stashInventoryAndPristine currentMark currentBranch
           case newHead of
@@ -251,7 +254,7 @@ fastImport' repodir inHandle printer repo marks initial = do
              Just newHead' -> case newHead' of
                HashId _ -> error "Cannot branch to commit id"
                MarkId mark -> restoreFromMark "" mark
-               BranchName bName -> restoreFromBranch "" bName
+               BranchName bName -> restoreFromBranch "" $ parseBranch bName
 
         restoreFromMark pref m = do
           restoreInventory pref $ markInventoryPath m
@@ -467,8 +470,9 @@ fastImport' repodir inHandle printer repo marks initial = do
     finalizeRepositoryChanges repo
     let pristineDir = "_darcs" </> "pristine.hashed"
     pristines <- filter notdot `fmap` getDirectoryContents pristineDir
-    forM_ branches $ \branch ->
-      withCurrentDirectory (".." </> branchDir branch) $ do
+    forM_ branches $ \b ->
+      withCurrentDirectory
+        (".." </> topLevelBranchDir (ParsedBranchName b)) $ do
         let origPristineDir = ".." </> repodir </> pristineDir
             origRepoDir = ".." </> repodir </> "_darcs"
         -- Hardlink all pristines.
@@ -489,6 +493,18 @@ fastImport' repodir inHandle printer repo marks initial = do
     createPristineDirectoryTree repo "."
     cleanRepository repo
     readIORef marksref
+
+-- Branch names are one of:
+-- refs/heads/branchName
+-- refs/remotes/remoteName
+-- refs/tags/tagName
+-- we want: branch-branchName
+--          remote-remoteName
+--          tag-tagName
+parseBranch :: Branch -> ParsedBranchName
+parseBranch b = ParsedBranchName $ BC.concat
+  [bType, (BC.pack "-"), BC.drop 2 bName] where
+    (bType, bName) = (BC.span (/= 's')) . (BC.drop 5) $ b
 
 parseObject :: Handle -> BC.ByteString -> IO ObjectStream
 parseObject inHandle = next mbObject
@@ -517,7 +533,7 @@ parseObject inHandle = next mbObject
         p_author name = lexString name >> line
 
         p_reset = do lexString "reset"
-                     branch <- line
+                     branch <- parseBranch `fmap` line
                      committish <- optional $ lexString "from" >> p_committish
                      return $ Reset branch committish
 
@@ -526,7 +542,7 @@ parseObject inHandle = next mbObject
                    <|> BranchName `fmap` line
 
         p_commit = do lexString "commit"
-                      branch <- line
+                      branch <- parseBranch `fmap` line
                       mark <- optional p_mark
                       _ <- optional $ p_author "author"
                       committer <- p_author "committer"

@@ -67,7 +67,7 @@ from :7
 EOF
 
 set -ev
-rm -rf R R-branch_branch1
+rm -rf R R-head-branch1
 echo "$DATA" | darcs-fastconvert import --create=yes R
 
 [[ -e R && -e R/a && -e R/b && -e R/c ]]

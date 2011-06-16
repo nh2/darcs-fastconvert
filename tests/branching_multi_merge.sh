@@ -50,7 +50,7 @@ from :5
 EOF
 
 set -ev
-rm -rf R R-branch_branch1 R-branch_branch2
+rm -rf R R-head-branch1 R-head-branch2
 echo "$DATA" | darcs-fastconvert import --create=yes R
 
-[[ -e R && -e R/a && -e R/b && -e R/c && -e R-branch_branch1/a && -e R-branch_branch1/b && (! -e R-branch_branch1/c) && -e R-branch_branch2/a && -e R-branch_branch2/c && (! -e R-branch_branch2/b) ]]
+[[ -e R && -e R/a && -e R/b && -e R/c && -e R-head-branch1/a && -e R-head-branch1/b && (! -e R-head-branch1/c) && -e R-head-branch2/a && -e R-head-branch2/c && (! -e R-head-branch2/b) ]]
