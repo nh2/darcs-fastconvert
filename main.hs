@@ -9,7 +9,8 @@ import qualified Data.ByteString.Lazy as BL
 import System.Console.CmdLib
 import System.IO ( stdin )
 
-data Cmd = Import { repo :: String
+data Cmd = Import { debug :: Bool
+                  , repo :: String
                   , format :: RepoFormat
                   , create :: Bool
                   , readMarks :: FilePath
@@ -42,7 +43,9 @@ instance Attributes Cmd where
     , bridgePath %> [ Help "directory containing an existing darcs bridge"
                     , ArgHelp "DIR"]
     , clone      %> [ Help "clone source repo into dedicated bridge dir"
-                    , Default True] ]
+                    , Default True]
+    , debug      %> [ Help "output extra activity information"
+                    , Default False ] ]
 
   readFlag _ = readCommon <+< readFormat <+< readInputType
     where readFormat "darcs-2" = Darcs2Format
@@ -68,11 +71,12 @@ handleImport :: Cmd -> IO ()
 handleImport c | create c =
   case readMarks c of
     [] -> format c `seq` runCmdWithMarks c
-      (const $ fastImport stdin (liftIO . putStrLn) (repo c) (format c))
+      (const $
+        fastImport (debug c) stdin putStrLn (repo c) (format c))
     _  -> die "cannot create repo, with existing marksfile."
 
 handleImport c = runCmdWithMarks c $
-  fastImportIncremental stdin (liftIO . putStrLn) (repo c)
+  fastImportIncremental (debug c) stdin putStrLn (repo c)
 
 handleExport :: Cmd -> IO ()
 handleExport c = runCmdWithMarks c $ fastExport (liftIO . BL.putStrLn) (repo c)

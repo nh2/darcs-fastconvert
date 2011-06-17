@@ -344,7 +344,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         withFile file mode (handleCmdMarks marksPath marksPath . toRun)
 
     darcsImport source = darcsFCCmd source ReadMode darcsImportMarksName $
-        \input -> fastImportIncremental input (liftIO.putStrLn) darcsPath
+        \input -> fastImportIncremental True input putStrLn darcsPath
 
     darcsExport target = darcsFCCmd target WriteMode darcsExportMarksName $
         \output -> fastExport (printer output) darcsPath

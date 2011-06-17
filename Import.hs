@@ -111,21 +111,22 @@ instance Show (State p) where
 masterBranchName :: ParsedBranchName
 masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
 
-fastImport :: Handle -> (String -> TreeIO ()) -> String -> RepoFormat
+fastImport :: Bool -> Handle -> (String -> IO ()) -> String -> RepoFormat
   -> IO Marks
-fastImport inHandle printer repodir fmt =
-  do createDirectory repodir
+fastImport debug inHandle printer repodir fmt =
+  do when debug $ printer "Creating new repo dir."
+     createDirectory repodir
      withCurrentDirectory repodir $ do
        createRepository $ case fmt of
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
          let initState = Toplevel Nothing $ masterBranchName
-         fastImport' repodir inHandle printer repo emptyMarks initState
+         fastImport' debug repodir inHandle printer repo emptyMarks initState
 
-fastImportIncremental :: Handle -> (String -> TreeIO ()) -> String -> Marks
-  -> IO Marks
-fastImportIncremental inHandle printer repodir marks =
+fastImportIncremental :: Bool -> Handle -> (String -> IO ()) -> String
+  -> Marks -> IO Marks
+fastImportIncremental debug inHandle printer repodir marks =
   withCurrentDirectory repodir $
     withRepoLock [] $ RepoJob $ \repo -> do
         -- Read the last mark we processed on a previous import, to prevent non
@@ -134,11 +135,12 @@ fastImportIncremental inHandle printer repodir marks =
                 0 -> Nothing
                 n -> Just n
             initState = Toplevel ancestor $ masterBranchName
-        fastImport' repodir inHandle printer repo marks initState
+        fastImport' debug repodir inHandle printer repo marks initState
 
-fastImport' :: forall p r u . (RepoPatch p) => FilePath -> Handle ->
-    (String -> TreeIO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
-fastImport' repodir inHandle printer repo marks initial = do
+fastImport' :: forall p r u . (RepoPatch p) => Bool -> FilePath -> Handle ->
+    (String -> IO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
+fastImport' debug repodir inHandle printer repo marks initial = do
+    let doDebug x = when debug $ printer $ "Import debug: " ++ x
     initPristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
@@ -159,6 +161,7 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         handleEndOfStream :: State p -> TreeIO [BC.ByteString]
         handleEndOfStream state = do
+          liftIO $ doDebug "Handling end-of-stream"
           -- We won't necessarily be InCommit at the EOS.
           case state of
             s@(InCommit _ _ _ _ _) -> finalizeCommit s
@@ -172,6 +175,7 @@ fastImport' repodir inHandle printer repo marks initial = do
                 branchTree
               branches = filter (/= BC.pack "head-master") entries
           mapM_ (initBranch . ParsedBranchName) branches
+          liftIO $ doDebug "Writing tentative pristine."
           (pristine, tree') <- getTentativePristineContents
           liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
           -- dump the right tree, without _darcs
@@ -189,7 +193,8 @@ fastImport' repodir inHandle printer repo marks initial = do
           [repodir, "-", (BC.unpack b)]
 
         initBranch :: ParsedBranchName -> TreeIO ()
-        initBranch b = do
+        initBranch b@(ParsedBranchName bName) = do
+          liftIO $ doDebug $ "Setting up branch dir for: " ++ (BC.unpack bName)
           inventory <- readFile $ branchInventoryPath b
           pristine <- readFile $ branchPristinePath b
           liftIO $ withCurrentDirectory ".." $ do
@@ -347,6 +352,7 @@ fastImport' repodir inHandle printer repo marks initial = do
                 restoreFromMark (show m) m
                 liftIO $ seal `fmap` readRepoUsingSpecificInventory
                   (show m ++ "tentative_hashed_inventory") repo
+          liftIO $ mapM_ (doDebug . ("Merging branch: " ++) . show) merges
           (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
           restoreFromMark "" (fromJust currentMark)
           us <- liftIO $ readTentativeRepo repo
@@ -358,13 +364,13 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
-          printer ("progress " ++ BC.unpack p)
+          liftIO $ printer ("progress " ++ BC.unpack p)
           return s
 
         process (Toplevel n b) (Tag what author msg) = do
           if Just what == n
              then addtag author msg
-             else printer $ "WARNING: Ignoring out-of-order tag " ++
+             else liftIO $ printer $ "WARNING: Ignoring out-of-order tag " ++
                              head (lines $ BC.unpack msg)
           return (Toplevel n b)
 
@@ -377,13 +383,18 @@ fastImport' repodir inHandle printer repo marks initial = do
           return $ Toplevel n b
 
         process x (Gitlink link) = do
-          printer $ "WARNING: Ignoring gitlink " ++ BC.unpack link
+          liftIO $ printer $ "WARNING: Ignoring gitlink " ++ BC.unpack link
           return x
 
         process (Toplevel previous pbranch)
           (Commit branch mark author message from merges) = do
+          liftIO $ doDebug $ "Handling commit beginning: " ++
+            (BC.unpack $ BC.take 20 message)
           fromMark <- if pbranch /= branch
-            then Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
+            then do
+              liftIO $ doDebug $ unwords
+                ["Switching branch from", show pbranch, "to", show branch]
+              Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
           mergeIfNecessary fromMark merges
           info <- makeinfo author message False
@@ -391,14 +402,17 @@ fastImport' repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch startstate NilRL info
 
         process s@(InCommit _ _ _ _ _) (Modify (ModifyMark m) path) = do
+          liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           diffCurrent s
 
         process s@(InCommit _ _ _ _ _) (Modify (Inline bits) path) = do
+          liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           diffCurrent s
 
         process (InCommit mark branch _ ps info) (Delete path) = do
+          liftIO $ doDebug $ "Handling delete of: " ++ (BC.unpack path)
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
@@ -406,6 +420,8 @@ fastImport' repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch current (rmPatch :<: ps) info
 
         process s@(InCommit _ _ _ _ _) (Copy from to) = do
+          liftIO $ doDebug $ unwords
+            ["Handling copy from of:", BC.unpack from, "to", BC.unpack to]
           let unpackFloat = floatPath.BC.unpack
           TM.copy (unpackFloat from) (unpackFloat to)
           -- We can't tell Darcs that a file has been copied, so it'll show as
@@ -413,6 +429,8 @@ fastImport' repodir inHandle printer repo marks initial = do
           diffCurrent s
 
         process (InCommit mark branch start ps info) (Rename from to) = do
+          liftIO $ doDebug $ unwords
+            ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
           let uFrom = BC.unpack from
               uTo = BC.unpack to
           targetDirExists <- liftIO $ treeHasDir start uTo
@@ -446,8 +464,9 @@ fastImport' repodir inHandle printer repo marks initial = do
 
         finalizeCommit :: RepoPatch p => State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) =
-          error "Cannot finalize commit at toplevel"
+          error "Cannot finalize commit at toplevel."
         finalizeCommit (InCommit mark branch _ ps info) = do
+          liftIO $ doDebug "Finalising commit."
           (prims :: FL p cX cY)  <- return $ fromPrims $
             sortCoalesceFL $ reverseRL ps
           let patch = infopatch info prims
@@ -470,9 +489,12 @@ fastImport' repodir inHandle printer repo marks initial = do
     finalizeRepositoryChanges repo
     let pristineDir = "_darcs" </> "pristine.hashed"
     pristines <- filter notdot `fmap` getDirectoryContents pristineDir
-    forM_ branches $ \b ->
+    forM_ branches $ \b -> do
       withCurrentDirectory
         (".." </> topLevelBranchDir (ParsedBranchName b)) $ do
+        doDebug $
+          "Linking pristines and copying patches/inventories for branch: "
+          ++ (BC.unpack b)
         let origPristineDir = ".." </> repodir </> pristineDir
             origRepoDir = ".." </> repodir </> "_darcs"
         -- Hardlink all pristines.
@@ -486,10 +508,12 @@ fastImport' repodir inHandle printer repo marks initial = do
                               ("_darcs" </> dir </> name)
 
         withRepository [] $ RepoJob $ \bRepo -> do
+          doDebug $ "Finalizing and cleaning branch repo: " ++ (BC.unpack b)
           finalizeRepositoryChanges bRepo
           createPristineDirectoryTree bRepo "."
           cleanRepository bRepo
     -- Must clean main repo after branches, else we'll have missing pristines.
+    doDebug "Finalizing and cleaning master repo."
     createPristineDirectoryTree repo "."
     cleanRepository repo
     readIORef marksref
