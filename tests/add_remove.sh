@@ -29,5 +29,5 @@ set -ev
 rm -rf R
 echo "$DATA" | darcs-fastconvert import --create=yes R
 cd R
-[[ ! -e testing ]]
+[[ ! -e a ]]
 [[ $(darcs cha --count) -eq 2 ]]
