@@ -411,6 +411,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           diffCurrent s
 
+        process (InCommit _ _ _ _ _) (Modify (ModifyHash hash) path) = do
+          die $ unwords ["FATAL: Cannot currently handle Git hash:",
+             BC.unpack hash, "for file", BC.unpack path,
+             "Do not use the --no-data option of git fast-export."]
+
         process (InCommit mark branch _ ps info) (Delete path) = do
           liftIO $ doDebug $ "Handling delete of: " ++ (BC.unpack path)
           let filePath = BC.unpack path
@@ -592,12 +597,10 @@ parseObject inHandle = next mbObject
                     p_marked
                   <?> "p_mark"
 
-        p_modifyData :: A.Parser ModifyData
-        p_modifyData = ModifyMark `fmap` p_marked
-                    -- Use try, since we don't know we haven't got a hash,
-                    -- until we encounter a '/'
-                   <|> A.try (fmap ModifyHash p_hash)
-                   <|> (lexString "inline" >> Inline `fmap` p_data)
+        p_modifyData :: A.Parser (Maybe ModifyData)
+        p_modifyData = (Just . ModifyMark) `fmap` p_marked
+                   <|> (lexString "inline" >> return Nothing)
+                   <|> (Just . ModifyHash) `fmap` p_hash
 
         p_data = do lexString "data"
                     len <- A.decimal
@@ -623,13 +626,17 @@ parseObject inHandle = next mbObject
                       return $ Rename oldName newName
         p_modify = do lexString "M"
                       mode <- lex $ A.takeWhile (A.inClass "01234567890")
-                      mark <- p_modifyData
+                      mbData <- p_modifyData
                       path <- line
-                      case mark of
-                        ModifyHash hash | mode == BC.pack "160000" ->
+                      case mbData of
+                        Nothing -> do
+                          inlineData <- Inline `fmap` p_data
+                          return $ Modify inlineData path
+                        Just h@(ModifyHash hash) | mode == BC.pack "160000" ->
                           return $ Gitlink hash
-                                    | otherwise -> fail ":(("
-                        _ -> return $ Modify mark path
+                                                 | otherwise ->
+                          return $ Modify h path
+                        Just mark -> return $ Modify mark path
 
         next :: (B.ByteString -> A.Result (Maybe Object)) -> B.ByteString
           -> IO ObjectStream
