@@ -488,6 +488,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         notdot ('.':_) = False
         notdot _ = True
 
+    -- TODO: this will die on incremental import...
     check patches (listMarks marks)
     (branches, _) <- hashedTreeIO (go initial B.empty) initPristine
       "_darcs/pristine.hashed"
@@ -607,8 +608,9 @@ parseObject inHandle = next mbObject
                     A.char '\n'
                     lex $ A.take len
                   <?> "p_data"
+
         p_marked = lex $ A.char ':' >> A.decimal
-        p_hash = lex $ A.takeWhile1 (A.inClass "0123456789abcdefABCDEF")
+        p_hash = lex $ A.takeWhile1 (A.inClass "0-9a-fA-F")
         p_from = lexString "from" >> p_marked
         p_merge = lexString "merge" >> p_marked
         p_delete = lexString "D" >> Delete `fmap` line
@@ -616,16 +618,19 @@ parseObject inHandle = next mbObject
                                 name <- A.takeWhile (/= '"')
                                 A.char '"'
                                 return name
+
         p_copy = do lexString "C"
                     source <- p_quotedName
                     target <- p_quotedName
                     return $ Copy source target
+
         p_rename = do lexString "R"
                       oldName <- p_quotedName
                       newName <- p_quotedName
                       return $ Rename oldName newName
+
         p_modify = do lexString "M"
-                      mode <- lex $ A.takeWhile (A.inClass "01234567890")
+                      mode <- lex $ A.takeWhile (A.inClass "0-9")
                       mbData <- p_modifyData
                       path <- line
                       case mbData of
