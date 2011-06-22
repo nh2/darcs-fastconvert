@@ -102,7 +102,7 @@ dumpPatch printer mark p n =
      mark p n
      dumpBits printer
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
-        , BLU.fromString $ "data " ++ show (BL.length $ patchMessage p)
+        , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) + 1)
         , patchMessage p ]
      when (n > 1) $
        dumpBits printer [ BLU.fromString $ "from :" ++ show (n - 1) ]
@@ -114,7 +114,7 @@ dumpTag printer p n = dumpBits printer
     , BLU.fromString $ "tag " ++ tagName p -- FIXME is this valid?
     , BLU.fromString $ "from :" ++ show (n - 1) -- the previous mark
     , BLU.fromString $ "tagger " ++ patchAuthor p ++ " " ++ patchDate p
-    , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) - 4)
+    , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) - 4 + 1)
     , BL.drop 4 $ patchMessage p ]
 
 dumpPatches :: (BLU.ByteString -> TreeIO ()) -> (RepoPatch p) => [PatchInfo]
