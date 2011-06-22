@@ -3,6 +3,7 @@ module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
 import Utils
 import Marks
+import Stash
 
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Char8( (<?>) )
@@ -58,21 +59,16 @@ import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import qualified Storage.Hashed.Monad as TM
 import qualified Storage.Hashed.Tree as T
 import Storage.Hashed.Darcs
-import Storage.Hashed.Hash( decodeBase16, encodeBase16, sha256, Hash(..) )
-import Storage.Hashed.Tree( Tree, treeHash, readBlob, TreeItem(..), findTree )
-import Storage.Hashed.AnchoredPath( floatPath, AnchoredPath(..), Name(..)
-                                  , appendPath, parents, anchorPath )
+import Storage.Hashed.Tree( Tree, findTree )
+import Storage.Hashed.AnchoredPath( floatPath, Name(..), parents, anchorPath )
 
 data RepoFormat = Darcs2Format | HashedFormat deriving (Eq, Data, Typeable)
 
 type Marked = Maybe Int
 type Merges = [Int]
-type Branch = B.ByteString
 type AuthorInfo = B.ByteString
 type Message = B.ByteString
 type Content = B.ByteString
-
-data ParsedBranchName = ParsedBranchName B.ByteString deriving (Show, Eq)
 
 data ModifyData = ModifyMark Int
                 | ModifyHash B.ByteString
@@ -182,12 +178,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           modify $ \s -> s { tree = tree' }
           return branches
 
-        getTentativePristineContents :: TreeIO (BL.ByteString, Tree IO)
-        getTentativePristineContents = do
-          tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
-          let root = encodeBase16 $ treeHash tree'
-          return (BL.fromChunks [BC.concat [BC.pack "pristine:", root]], tree')
-
         topLevelBranchDir :: ParsedBranchName -> FilePath
         topLevelBranchDir (ParsedBranchName b) = concat
           [repodir, "-", (BC.unpack b)]
@@ -206,95 +196,16 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             BL.writeFile (bDir </> "format") $ BL.pack $
               unlines ["hashed", "darcs-2"]
 
-        -- sort marks into buckets, since there can be a *lot* of them
-        markpath :: Int -> AnchoredPath
-        markpath n = floatPath "_darcs/marks"
-                        `appendPath` (Name $ BC.pack $ show (n `div` 1000))
-                        `appendPath` (Name $ BC.pack $ show (n `mod` 1000))
-
-        markInventoryPath :: Int -> AnchoredPath
-        markInventoryPath n = markpath n `appendPath`
-          (Name $ BC.pack "inventory")
-
-        markPristinePath :: Int -> AnchoredPath
-        markPristinePath n = markpath n `appendPath`
-          (Name $ BC.pack "pristine")
-
-        branchPath :: ParsedBranchName -> AnchoredPath
-        branchPath (ParsedBranchName b) = floatPath "_darcs/branches/"
-          `appendPath` Name b
-
-        branchInventoryPath :: ParsedBranchName -> AnchoredPath
-        branchInventoryPath b = branchPath b `appendPath`
-          Name (BC.pack "tentative_hashed_inventory")
-
-        branchPristinePath :: ParsedBranchName -> AnchoredPath
-        branchPristinePath b = branchPath b `appendPath`
-          Name (BC.pack "tentative_pristine")
-
-        branchMarkPath :: ParsedBranchName -> AnchoredPath
-        branchMarkPath b = branchPath b `appendPath`
-          Name (BC.pack "last_mark")
-
-        stashInventoryAndPristine :: Marked -> ParsedBranchName -> TreeIO ()
-        stashInventoryAndPristine n branch = do
-          inventory <- liftIO $ BL.readFile "_darcs/tentative_hashed_inventory"
-          (pristine, tree') <- getTentativePristineContents
-          -- Manually dump the tree.
-          liftIO $ writeDarcsHashed tree' "_darcs/pristine.hashed"
-          case n of
-            Nothing -> return ()
-            Just mark -> do
-              TM.writeFile (branchMarkPath branch) $ BL.pack $ show mark
-              TM.writeFile (markInventoryPath mark) inventory
-              TM.writeFile (markPristinePath mark) pristine
-          TM.writeFile (branchInventoryPath branch) inventory
-          TM.writeFile (branchPristinePath branch) pristine
 
         switchBranch :: Marked -> ParsedBranchName -> Maybe Committish -> TreeIO Int
         switchBranch currentMark currentBranch newHead = do
-          stashInventoryAndPristine currentMark currentBranch
+          stashInventoryAndPristine currentMark (Just currentBranch)
           case newHead of
              Nothing -> return (fromJust currentMark) -- Base on current state
              Just newHead' -> case newHead' of
                HashId _ -> error "Cannot branch to commit id"
                MarkId mark -> restoreFromMark "" mark
                BranchName bName -> restoreFromBranch "" $ parseBranch bName
-
-        restoreFromMark pref m = do
-          restoreInventory pref $ markInventoryPath m
-          restorePristine pref $ markPristinePath m
-          return m
-
-        restoreFromBranch pref b = do
-          restoreInventory pref $ branchInventoryPath b
-          restorePristine pref $ branchPristinePath b
-          branchMark <- TM.readFile $ branchMarkPath b
-          let Just (m, _) = BL.readInt branchMark
-          return m
-
-        restoreInventory pref invPath = do
-          inventory <- readFile invPath
-          liftIO $ BL.writeFile
-            ("_darcs" </> pref ++ "tentative_hashed_inventory") inventory
-
-        restorePristine pref prisPath = do
-          pristine <- TM.readFile prisPath
-          liftIO $ BL.writeFile
-            ("_darcs" </> pref ++ "tentative_pristine") pristine
-          let prefixLen = fromIntegral $ length "pristine:"
-              pristineDir = "_darcs/pristine.hashed"
-              strictify = B.concat . BL.toChunks
-              hash = decodeBase16 . strictify . BL.drop prefixLen $ pristine
-          currentTree <- gets tree
-          prisTree <- liftIO $
-            readDarcsHashedNosize pristineDir hash >>= T.expand
-          let darcsDirPath = floatPath "_darcs"
-              darcsDir = SubTree `fmap` findTree currentTree darcsDirPath
-              combinedTree = T.modifyTree prisTree darcsDirPath darcsDir
-          -- We want to keep our marks/stashed inventories/pristines, but
-          -- the working dir of the pristine.
-          modify $ \s -> s { tree = combinedTree }
 
         makeinfo author message tag = do
           let (name:log) = lines $ BC.unpack message
@@ -322,18 +233,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                  patch = adddeps (infopatch info ident) deps
              liftIO . addToTentativeInv $ n2pia patch
              return ()
-
-        -- processing items
-        updateHashes = do
-          let nodarcs (AnchoredPath (Name x:_)) _ = x /= BC.pack "_darcs"
-              hashblobs (File blob@(T.Blob con NoHash)) =
-                do hash <- sha256 `fmap` readBlob blob
-                   return $ File (T.Blob con hash)
-              hashblobs x = return x
-          tree' <- liftIO . T.partiallyUpdateTree hashblobs nodarcs =<<
-            gets tree
-          modify $ \s -> s { tree = tree' }
-          return $ T.filter nodarcs tree'
 
         diffCurrent (InCommit mark branch start ps info) = do
           current <- updateHashes
@@ -483,7 +382,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Nothing -> liftIO $ modifyIORef marksref $
                 \m -> addMark m n (patchHash $ n2pia patch)
               Just n' -> die $ "FATAL: Mark already exists: " ++ BC.unpack n'
-          stashInventoryAndPristine mark branch
+          stashInventoryAndPristine mark (Just branch)
 
         notdot ('.':_) = False
         notdot _ = True
@@ -523,18 +422,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     createPristineDirectoryTree repo "."
     cleanRepository repo
     readIORef marksref
-
--- Branch names are one of:
--- refs/heads/branchName
--- refs/remotes/remoteName
--- refs/tags/tagName
--- we want: branch-branchName
---          remote-remoteName
---          tag-tagName
-parseBranch :: Branch -> ParsedBranchName
-parseBranch b = ParsedBranchName $ BC.concat
-  [bType, (BC.pack "-"), BC.drop 2 bName] where
-    (bType, bName) = (BC.span (/= 's')) . (BC.drop 5) $ b
 
 parseObject :: Handle -> BC.ByteString -> IO ObjectStream
 parseObject inHandle = next mbObject
