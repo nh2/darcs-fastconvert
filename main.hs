@@ -17,7 +17,8 @@ data Cmd = Import { debug :: Bool
                   , writeMarks :: FilePath }
          | Export { repo :: String
                   , readMarks :: FilePath
-                  , writeMarks :: FilePath }
+                  , writeMarks :: FilePath
+                  , branches :: [FilePath] }
          | CreateBridge { inputRepo :: String
                         , clone :: Bool}
          | Sync   { bridgePath :: String
@@ -45,7 +46,9 @@ instance Attributes Cmd where
     , clone      %> [ Help "clone source repo into dedicated bridge dir"
                     , Default True]
     , debug      %> [ Help "output extra activity information"
-                    , Default False ] ]
+                    , Default False ]
+    , branches   %> [ Help "branches to be exported"
+                    , Extra True ] ]
 
   readFlag _ = readCommon <+< readFormat <+< readInputType
     where readFormat "darcs-2" = Darcs2Format
@@ -79,7 +82,8 @@ handleImport c = runCmdWithMarks c $
   fastImportIncremental (debug c) stdin putStrLn (repo c)
 
 handleExport :: Cmd -> IO ()
-handleExport c = runCmdWithMarks c $ fastExport (liftIO . BL.putStrLn) (repo c)
+handleExport c = runCmdWithMarks c $
+  fastExport (liftIO . BL.putStrLn) (repo c) (branches c)
 
 handleCreateBridge :: Cmd -> IO ()
 handleCreateBridge c = case inputRepo c of
