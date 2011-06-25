@@ -366,7 +366,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO $ print obj
           fail $ "Unexpected object in state " ++ show state
 
-        finalizeCommit :: RepoPatch p => State p -> TreeIO ()
+        finalizeCommit :: State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) =
           error "Cannot finalize commit at toplevel."
         finalizeCommit (InCommit mark branch _ ps info) = do
