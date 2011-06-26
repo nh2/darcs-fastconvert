@@ -39,7 +39,7 @@ import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 import Darcs.Repository.State( readRecorded )
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir
-                   , adddir, move )
+                   , adddir, move, addfile, hunk )
 import Darcs.Patch.Apply ( Apply(..) )
 import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
                            , merge2FL )
@@ -241,6 +241,27 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch current (reverseFL diff +<+ ps) info
         diffCurrent _ = error "This is never valid outside of a commit."
 
+        checkForNewFile s@(InCommit mark branch start ps info) path = do
+          let rawPath = BC.unpack path
+              floatedPath = floatPath rawPath
+          -- Only update the hash of the newly added file.
+          current <- filteredUpdateHashes $
+            Just (\itemPath _ -> itemPath == floatedPath)
+          case T.findFile start floatedPath of
+            -- If we've just added a new file, we do not need to do a full
+            -- diff, instead just add the raw prims to our incremental RL.
+            Nothing -> do
+              contents <- (BC.lines . BC.concat . BL.toChunks)
+                `fmap` readFile floatedPath
+              let hunkPatch = hunk rawPath 1 [] $ contents
+                  addPatches = hunkPatch :<: addfile rawPath :<: ps
+              return $ InCommit mark branch current addPatches info
+            -- If the file already existed, just diff.
+            (Just _) -> do
+              Sealed diff <- unFreeLeft `fmap`
+                liftIO (treeDiff (const TextFile) start current)
+              return $ InCommit mark branch current (reverseFL diff +<+ ps) info
+
         mergeIfNecessary :: Marked -> Merges -> TreeIO ()
         mergeIfNecessary _ [] = return ()
         mergeIfNecessary currentMark merges  = do
@@ -303,12 +324,12 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         process s@(InCommit _ _ _ _ _) (Modify (ModifyMark m) path) = do
           liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.copy (markpath m) (floatPath $ BC.unpack path)
-          diffCurrent s
+          checkForNewFile s path
 
         process s@(InCommit _ _ _ _ _) (Modify (Inline bits) path) = do
           liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
-          diffCurrent s
+          checkForNewFile s path
 
         process (InCommit _ _ _ _ _) (Modify (ModifyHash hash) path) = do
           die $ unwords ["FATAL: Cannot currently handle Git hash:",
