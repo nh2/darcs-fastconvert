@@ -106,44 +106,44 @@ dumpFiles printer files = forM_ files $ \file -> do
 
 dumpPatch :: (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y
-  -> Int -> String -> TreeIO ()
-dumpPatch printer mark p n bName =
-  do dumpBits printer [ BLC.pack $ "progress " ++ show n ++ ": " ++ patchName p
+  -> Int -> Int -> String -> TreeIO ()
+dumpPatch printer mark p from current bName =
+  do dumpBits printer [ BLC.pack $ "progress " ++ show current ++ ": "
+                          ++ patchName p
                       , BLC.pack $ "commit refs/heads/" ++ bName ]
-     mark p n
+     mark p current
      dumpBits printer
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
         , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) + 1)
         , patchMessage p ]
-     when (n > 1) $
-       dumpBits printer [ BLU.fromString $ "from :" ++ show (n - 1) ]
+     when (current > 1) $
+       dumpBits printer [ BLU.fromString $ "from :" ++ show from]
      dumpFiles printer $ map floatPath $ listTouchedFiles p
 
 dumpTag :: (BLU.ByteString -> TreeIO ()) -> (PatchInfoAnd p) x y -> Int
   -> TreeIO ()
-dumpTag printer p n = dumpBits printer
+dumpTag printer p from = dumpBits printer
     [ BLU.fromString $ "progress TAG " ++ tagName p
     , BLU.fromString $ "tag refs/tags/" ++ tagName p -- FIXME is this valid?
-    , BLU.fromString $ "from :" ++ show (n - 1) -- the previous mark
+    , BLU.fromString $ "from :" ++ show from
     , BLU.fromString $ "tagger " ++ patchAuthor p ++ " " ++ patchDate p
     , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) - 4 + 1)
     , BL.drop 4 $ patchMessage p ]
 
-updateBranches :: forall p cX cY . (RepoPatch p) => Int
-  -> PatchInfoAnd p cX cY -> [Branch p] -> (Bool, [Branch p])
-updateBranches n patch branches = (anyUnequal, branches') where
-    anyUnequal = not $ all fst updatedBranches
-    branches'  = map snd updatedBranches
-    updatedBranches = map incrementIfEqual branches
-    incrementIfEqual orig@(Branch bName _ (Sealed2 bPatches)) =
-      case bPatches of
-        NilFL -> (False, orig)
-        (bp :>: bps) ->
-          -- TODO: justify the use of unsafeCompare...
-          let equalPatches = unsafeCompare patch bp in
-          (equalPatches, if equalPatches
-                           then Branch bName n $ seal2 bps
-                           else orig)
+updateBranches :: forall p cX cY . (RepoPatch p) => Int -> PatchInfoAnd p cX cY
+  -> [(Bool, Branch p)] -> TreeIO [(Bool, Branch p)]
+updateBranches current patch bs = mapM incrementIfEqual bs where
+  -- Fst is whether we have found the fork yet.
+  incrementIfEqual s@(True, _) = return s
+  incrementIfEqual (_, o@(Branch _ _ (Sealed2 NilFL))) =
+    return (True, o)
+  incrementIfEqual (_, o@(Branch bName from (Sealed2 (bp :>: bps)))) =
+    do -- TODO: justify the use of unsafeCompare...
+       let isFork = not $ unsafeCompare patch bp
+       -- If we've just hit a fork, stash the current pristine, so we can
+       -- restore to it later, to export the divergent patches.
+       when isFork $ stashPristine (Just from) Nothing
+       return (isFork, if isFork then o else Branch bName current $ seal2 bps)
 
 reset :: (BLU.ByteString -> TreeIO ()) -> Maybe Int -> String -> TreeIO ()
 reset printer mbMark branch = do
@@ -151,45 +151,46 @@ reset printer mbMark branch = do
     maybe (return ()) (\m -> printer . BLC.pack $ "from :" ++ show m) mbMark
 
 exportBranches :: (RepoPatch p) => (BLU.ByteString -> TreeIO ()) -> [PatchInfo]
-  -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ()) -> Int
-  -> [Branch p] -> TreeIO ()
-exportBranches _ _ _ _ [] = return ()
-exportBranches printer tags mark n (Branch name m ps : bs) = do
-    -- m + 1 since we preincrement for the next mark.
-    if n /= m + 1
-      then restorePristineFromMark "export" m >> reset printer (Just m) name
+  -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ()) -> Int -> Int
+  -> [(Bool, Branch p)] -> TreeIO ()
+exportBranches _ _ _ _ _ [] = return ()
+exportBranches printer tags mark from current ((_, Branch name m ps) : bs) = do
+    if from /= m
+      then restorePristineFromMark "exportTemp" m >> reset printer (Just m) name
       else reset printer Nothing name
-    dumpPatches printer tags mark (m + 1) (unsafeUnseal2 ps) name bs
+    dumpPatches printer tags mark m current (unsafeUnseal2 ps) name $
+      -- Reset fork markers, so we can find branch common prefixes.
+      map (\(_, b) -> (False, b)) bs
 
 dumpPatches :: forall p x y . (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> [PatchInfo] -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
-  -> Int -> FL (PatchInfoAnd p) x y -> String -> [Branch p] -> TreeIO ()
-dumpPatches printer tags mark n NilFL _ branches =
-  exportBranches printer tags mark n branches
-dumpPatches printer tags mark n (p:>:ps) bName branches = do
-  -- TODO: when we've realised that we're "past" all the branch points, we
-  -- don't need to bother updating...
-  let (anyUnequal, branches') = updateBranches n p branches
-  when anyUnequal $ stashPristine (Just (n - 1)) Nothing
+  -> Int -> Int -> FL (PatchInfoAnd p) x y -> String -> [(Bool, Branch p)]
+  -> TreeIO ()
+dumpPatches printer tags mark from current NilFL _ bs =
+  exportBranches printer tags mark from current bs
+dumpPatches printer tags mark from current (p:>:ps) bName bs = do
+  bs' <- updateBranches current p bs
   apply p
-  if inOrderTag tags p && n > 0
-     then dumpTag printer p n
-     else dumpPatch printer mark p n bName
-  dumpPatches printer tags mark (next tags n p) ps bName branches'
+  if inOrderTag tags p && current > 0
+     then dumpTag printer p from
+     else dumpPatch printer mark p from current bName
+  let nextMark = next tags current p
+      fromMark = if nextMark == current then from else current
+  dumpPatches printer tags mark fromMark nextMark ps bName bs'
 
 fp2bn :: FilePath -> String
 fp2bn = takeFileName
 
 fastExport :: (BLU.ByteString -> TreeIO ()) -> String -> [FilePath] -> Marks
   -> IO Marks
-fastExport printer repodir branches marks = do
-  branchPaths <- sort `fmap` mapM canonicalizePath branches
+fastExport printer repodir bs marks = do
+  branchPaths <- sort `fmap` mapM canonicalizePath bs
   withCurrentDirectory repodir $ withRepository [] $ RepoJob $ \repo ->
     fastExport' repo printer branchPaths marks
 
 fastExport' :: forall p r u . (RepoPatch p) => Repository p r u r
   -> (BLU.ByteString -> TreeIO ()) -> [FilePath] -> Marks -> IO Marks
-fastExport' repo printer branches marks = do
+fastExport' repo printer bs marks = do
   patchset <- readRepo repo
   marksref <- newIORef marks
   let patches = newset2FL patchset
@@ -233,12 +234,12 @@ fastExport' repo printer branches marks = do
         let bName = fp2bn bPath
         return . Branch bName 1 $ seal2 bPatches
 
-  them <- forM branches readBranchRepo
+  them <- forM bs readBranchRepo
 
   ((n, FlippedSeal patches'), newTree) <-
     hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
-  hashedTreeIO (dumpPatches printer tags mark n patches' "master" them) newTree
-    "_darcs/pristine.hashed"
+  hashedTreeIO (dumpPatches printer tags mark (n - 1) n patches' "master" $
+    map (\ps -> (False, ps)) them) newTree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
   current <- readHashedPristineRoot repo
