@@ -5,19 +5,22 @@ import Marks
 import Utils
 import Stash
 
+import Codec.Compression.GZip ( compress )
 import Control.Monad ( when, forM, forM_, unless )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets )
 import Control.Exception( finally )
-import Data.List ( sort )
-import Data.Maybe ( catMaybes, fromJust )
+import Data.List ( sort, intercalate )
+import Data.Maybe ( catMaybes, fromJust, isJust )
 import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.ByteString.Lazy.UTF8 as BLU
+import Data.ByteString.Base64 ( encode )
 import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Prelude hiding ( readFile )
+import Printer ( renderString )
 import System.Directory ( canonicalizePath )
 import System.FilePath ( takeFileName )
 import System.Time ( toClockTime )
@@ -30,11 +33,12 @@ import Darcs.Repository.HashedRepo ( readHashedPristineRoot )
 import Darcs.Repository.HashedIO ( cleanHashdir )
 import Darcs.Repository.Internal ( identifyRepositoryFor )
 import Darcs.Repository.InternalTypes ( extractCache )
-import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch )
+import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch, showPatch )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
+import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..) )
 import Darcs.Patch.Set ( Origin, PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Witnesses.Eq ( (=\/=), MyEq(..), isIsEq, unsafeCompare )
-import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL )
+import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL )
 import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..), seal2, Sealed2(..)
                               , unsafeUnseal2 )
 import Darcs.Utils ( withCurrentDirectory )
@@ -104,6 +108,30 @@ dumpFiles printer files = forM_ files $ \file -> do
   when (not isfile && not isdir) $
     printer $ BLU.fromString $ "D " ++ anchorPath "" file
 
+generateInfoIgnores :: forall p x y . (RepoPatch p) => PatchInfoAnd p x y
+  -> BL.ByteString
+generateInfoIgnores p =
+  packIgnores . takeStartEnd . mapFL renderReplace $ effect p
+  where renderReplace :: (PrimOf p) cX cY -> Maybe String
+        renderReplace pr | primIsTokReplace pr =
+          Just . renderString . showPatch $ pr
+        renderReplace _ = Nothing
+        -- We can only handle replaces at the start and end, since we cannot
+        -- represent the intermediate states, which we would need to recover
+        -- the prims that were originally applied.
+        takeStartEnd ps = catMaybes $ starts ++ ends where
+          (startJusts, ps') = span isJust ps
+          (endJusts, _) = span isJust $ reverse ps'
+          prefixer pref = map (fmap (pref ++))
+          starts = prefixer "S " startJusts
+          ends = prefixer "E " $ reverse endJusts
+        packIgnores :: [String] -> BL.ByteString
+        packIgnores [] = BL.empty
+        packIgnores is = BLC.fromChunks [prefix `BC.append` base64ps] where
+          prefix = BC.pack "\nIgnore-this: darcs-patches: "
+          gzipped = compress . BLC.pack $ intercalate "\n" is
+          base64ps = encode . BC.concat . BLC.toChunks $ gzipped
+
 dumpPatch :: (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y
   -> Int -> Int -> String -> TreeIO ()
@@ -111,11 +139,12 @@ dumpPatch printer mark p from current bName =
   do dumpBits printer [ BLC.pack $ "progress " ++ show current ++ ": "
                           ++ patchName p
                       , BLC.pack $ "commit refs/heads/" ++ bName ]
+     let message = patchMessage p `BL.append` generateInfoIgnores p
      mark p current
      dumpBits printer
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
-        , BLU.fromString $ "data " ++ show (BL.length (patchMessage p) + 1)
-        , patchMessage p ]
+        , BLU.fromString $ "data " ++ show (BL.length message + 1)
+        , message ]
      when (current > 1) $
        dumpBits printer [ BLU.fromString $ "from :" ++ show from]
      dumpFiles printer $ map floatPath $ listTouchedFiles p
