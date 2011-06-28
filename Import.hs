@@ -5,16 +5,18 @@ import Utils
 import Marks
 import Stash
 
+import Codec.Compression.GZip ( decompress )
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Char8( (<?>) )
 import Data.Data
 import Data.DateTime ( formatDateTime, parseDateTime, startOfTime )
+import Data.ByteString.Base64 ( decode )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Control.Applicative ( Alternative, (<|>) )
-import Control.Monad ( when, forM_ )
+import Control.Monad ( when, forM_, foldM )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import Data.Maybe ( isNothing, fromMaybe, fromJust )
@@ -39,21 +41,25 @@ import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 import Darcs.Repository.State( readRecorded )
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir
-                   , adddir, move, addfile, hunk )
-import Darcs.Patch.Apply ( Apply(..) )
+                   , adddir, move, addfile, hunk, invert )
+import Darcs.Patch.Apply ( Apply(..), applyToTree )
 import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
                            , merge2FL )
+import Darcs.Patch.FileName ( fp2fn, normPath )
 import Darcs.Patch.Info ( PatchInfo, patchinfo )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia )
 import Darcs.Patch.Prim ( sortCoalesceFL )
-import Darcs.Patch.Prim.Class ( PrimOf )
+import Darcs.Patch.Prim.Class ( PrimOf, is_filepatch )
 import Darcs.Patch.Prim.V1 ( Prim )
+import Darcs.Patch.Read ( readPatch )
 import Darcs.Patch.Set ( newset2FL )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Utils ( nubsort, withCurrentDirectory, treeHasDir, treeHasFile )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL
-                               , (:\/:)(..), mapFL )
-import Darcs.Witnesses.Sealed ( seal, Sealed(..), unFreeLeft )
+                               , (:\/:)(..), mapFL, filterRL, lengthRL )
+import Darcs.Witnesses.Sealed ( seal, Sealed(..), unFreeLeft, seal2,
+                                Sealed2(..), unsafeUnseal2 )
+import Darcs.Witnesses.Unsafe ( unsafeCoercePEnd )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import qualified Storage.Hashed.Monad as TM
@@ -98,11 +104,11 @@ data ObjectStream = Elem B.ByteString Object
 data State p where
     Toplevel :: Marked -> ParsedBranchName -> State p
     InCommit :: Marked -> ParsedBranchName -> Tree IO -> RL (PrimOf p) cX cY
-      -> PatchInfo -> State p
+      -> RL (PrimOf p) cA cB -> PatchInfo -> State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
-  show (InCommit _ _ _ _ _ ) = "InCommit"
+  show (InCommit _ _ _ _ _ _) = "InCommit"
 
 masterBranchName :: ParsedBranchName
 masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
@@ -160,7 +166,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO $ doDebug "Handling end-of-stream"
           -- We won't necessarily be InCommit at the EOS.
           case state of
-            s@(InCommit _ _ _ _ _) -> finalizeCommit s
+            s@(InCommit _ _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
           -- The stream may not reset us to master, so do it manually.
           restoreFromBranch "" $ parseBranch $ BC.pack "refs/heads/master"
@@ -234,19 +240,37 @@ fastImport' debug repodir inHandle printer repo marks initial = do
              liftIO . addToTentativeInv $ n2pia patch
              return ()
 
-        diffCurrent (InCommit mark branch start ps info) = do
-          current <- updateHashes
+        primsAffectingFile :: FilePath -> RL (PrimOf p) cX cY
+          -> [Sealed2 (PrimOf p)]
+        primsAffectingFile fp =
+          filterRL (\p -> (normPath `fmap` is_filepatch p) == (Just $ fp2fn fp))
+
+        updateTreeWithPrims :: FilePath -> RL (PrimOf p) cX cY
+          -> TreeIO (Tree IO) -> TreeIO (Tree IO)
+        updateTreeWithPrims fn endps treeProvider = do
+          let affectingPrims :: [Sealed2 (PrimOf p)]
+              affectingPrims = primsAffectingFile fn endps
+              invertedPrims = map (invert.unsafeUnseal2) affectingPrims
+          liftIO $ doDebug $ (show.length $ affectingPrims) ++ " affecting prims."
+          current <- treeProvider
+          liftIO $ foldM (flip applyToTree) current invertedPrims
+
+        diffCurrent (InCommit mark branch start ps endps info) fn = do
+          current <- updateTreeWithPrims fn endps updateHashes
           Sealed diff <- unFreeLeft `fmap`
             liftIO (treeDiff (const TextFile) start current)
-          return $ InCommit mark branch current (reverseFL diff +<+ ps) info
-        diffCurrent _ = error "diffCurrent is never valid outside of a commit."
+          let newps = reverseFL diff +<+ ps
+          return $ InCommit mark branch current newps endps info
+        diffCurrent _ _ =
+          error "diffCurrent is never valid outside of a commit."
 
-        checkForNewFile s@(InCommit mark branch start ps info) path = do
+        checkForNewFile s@(InCommit mark branch start ps endps info) path = do
           let rawPath = BC.unpack path
               floatedPath = floatPath rawPath
-          -- Only update the hash of the newly added file.
-          current <- filteredUpdateHashes $
-            Just (\itemPath _ -> itemPath == floatedPath)
+              -- Only update the hash of the newly added file.
+              updateFileHash = filteredUpdateHashes $
+                Just (\itemPath _ -> itemPath == floatedPath)
+          current <- updateTreeWithPrims rawPath endps updateFileHash
           case T.findFile start floatedPath of
             -- If we've just added a new file, we do not need to do a full
             -- diff, instead just add the raw prims to our incremental RL.
@@ -255,12 +279,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 `fmap` readFile floatedPath
               let hunkPatch = hunk rawPath 1 [] $ contents
                   addPatches = hunkPatch :<: addfile rawPath :<: ps
-              return $ InCommit mark branch current addPatches info
+              return $ InCommit mark branch current addPatches endps info
             -- If the file already existed, just diff.
-            (Just _) -> do
-              Sealed diff <- unFreeLeft `fmap`
-                liftIO (treeDiff (const TextFile) start current)
-              return $ InCommit mark branch current (reverseFL diff +<+ ps) info
+            (Just _) -> diffCurrent s rawPath
         checkForNewFile _ _ = error
           "checkForNewFile is never valid outside of a commit."
 
@@ -283,6 +304,46 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO . sequence_ $ mapFL addToTentativeInv merged
           apply merged
           mapM_ cleanup merges
+
+        tryParseDarcsPatches :: B.ByteString ->
+          (B.ByteString, (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p))))
+        tryParseDarcsPatches msg = case findSubStr of
+          (_, after) | B.null after -> (msg, (seal2 NilRL, seal2 NilRL))
+          (prefix, patchBlob)-> 
+            let headerLen = length "darcs-patches: "
+                blobLines = BC.lines . BC.drop headerLen $ patchBlob
+                nonBlob = BC.unlines $ tail blobLines
+                base64Str = head blobLines
+                gzipped = decode base64Str in
+            case gzipped of
+              Left e -> corrupt $ (BC.pack e) `BC.append` base64Str
+              Right gzipped' ->
+                let strictify = BC.concat . BL.toChunks
+                    lazify bl = BL.fromChunks [bl]
+                    lGzipped = lazify gzipped'
+                    pList = map strictify . BL.lines . decompress $
+                      lGzipped
+                    ps = readPatches pList in
+                    (prefix `BC.append` nonBlob, ps)
+          where
+          findSubStr = B.breakSubstring (BC.pack "darcs-patches: ") msg
+          corrupt :: B.ByteString -> a
+          corrupt s = error $
+            "FATAL: Corruption? Cannot parse darcs-patches: " ++ BC.unpack s
+          readPatches = foldl readP (seal2 NilRL, seal2 NilRL)
+          readP :: (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p)))
+            -> B.ByteString
+            -> (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p)))
+          readP (ss@(Sealed2 ss'), es@(Sealed2 es')) str =
+            let (prefix, rest) = B.splitAt 2 str in
+             case (BC.unpack prefix, rest) of
+               ("S ", s) -> case readPatch s of
+                              Nothing -> corrupt s
+                              Just (Sealed patch) -> (seal2 $ patch :<: ss', es)
+               ("E ", e) -> case readPatch e of
+                              Nothing -> corrupt e
+                              Just (Sealed patch) -> (ss, seal2 $ patch :<: es')
+               _ -> corrupt str
 
         process :: State p -> Object -> TreeIO (State p)
         process s (Progress p) = do
@@ -319,43 +380,52 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
           mergeIfNecessary fromMark merges
-          info <- makeinfo author message False
+          (message', (Sealed2 prePatches, Sealed2 postPatches)) <-
+            return $ tryParseDarcsPatches message
+          let preCount = lengthRL prePatches
+              postCount = lengthRL postPatches
+          when (preCount > 0 || postCount > 0) $
+            liftIO $ doDebug $ unwords ["Commit contains", show preCount
+              , "start darcs-patches and", show postCount, "end darcs-patches."]
+          apply prePatches
           startstate <- updateHashes
-          return $ InCommit mark branch startstate NilRL info
+          info <- makeinfo author message' False
+          return $ InCommit mark branch startstate prePatches postPatches info
 
-        process s@(InCommit _ _ _ _ _) (Modify (ModifyMark m) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
           liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           checkForNewFile s path
 
-        process s@(InCommit _ _ _ _ _) (Modify (Inline bits) path) = do
+        process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
           liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           checkForNewFile s path
 
-        process (InCommit _ _ _ _ _) (Modify (ModifyHash hash) path) = do
+        process (InCommit _ _ _ _ _ _) (Modify (ModifyHash hash) path) = do
           die $ unwords ["FATAL: Cannot currently handle Git hash:",
              BC.unpack hash, "for file", BC.unpack path,
              "Do not use the --no-data option of git fast-export."]
 
-        process (InCommit mark branch _ ps info) (Delete path) = do
+        process (InCommit mark branch _ ps endps info) (Delete path) = do
           liftIO $ doDebug $ "Handling delete of: " ++ (BC.unpack path)
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
           current <- updateHashes
-          return $ InCommit mark branch current (rmPatch :<: ps) info
+          return $ InCommit mark branch current (rmPatch :<: ps) endps info
 
-        process s@(InCommit _ _ _ _ _) (Copy from to) = do
+        process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
           liftIO $ doDebug $ unwords
             ["Handling copy from of:", BC.unpack from, "to", BC.unpack to]
           let unpackFloat = floatPath.BC.unpack
           TM.copy (unpackFloat from) (unpackFloat to)
           -- We can't tell Darcs that a file has been copied, so it'll show as
           -- an addfile.
-          diffCurrent s
+          diffCurrent s $ BC.unpack to
 
-        process (InCommit mark branch start ps info) (Rename from to) = do
+        process (InCommit mark branch start ps endps info)
+          (Rename from to) = do
           liftIO $ doDebug $ unwords
             ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
           let uFrom = BC.unpack from
@@ -378,10 +448,10 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           let movePatches = move uFrom uTo :<: preparePatchesRL
           TM.rename (floatPath uFrom) (floatPath uTo)
           current <- updateHashes
-          return $ InCommit mark branch current (movePatches +<+ ps) info
+          return $ InCommit mark branch current (movePatches +<+ ps) endps info
 
         -- When we leave the commit, create a patch for the cumulated prims.
-        process s@(InCommit mark branch _ _ _) x = do
+        process s@(InCommit mark branch _ _ _ _) x = do
           finalizeCommit s
           process (Toplevel mark branch) x
 
@@ -392,10 +462,10 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         finalizeCommit :: State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) =
           error "Cannot finalize commit at toplevel."
-        finalizeCommit (InCommit mark branch _ ps info) = do
+        finalizeCommit (InCommit mark branch _ ps endps info) = do
           liftIO $ doDebug "Finalising commit."
           (prims :: FL p cX cY)  <- return $ fromPrims $
-            sortCoalesceFL $ reverseRL ps
+            sortCoalesceFL . reverseRL $ endps +<+ unsafeCoercePEnd ps
           let patch = infopatch info prims
           liftIO $ addToTentativeInventory (extractCache repo)
                                            GzipCompression (n2pia patch)

@@ -128,7 +128,7 @@ generateInfoIgnores p =
         packIgnores :: [String] -> BL.ByteString
         packIgnores [] = BL.empty
         packIgnores is = BLC.fromChunks [prefix `BC.append` base64ps] where
-          prefix = BC.pack "\nIgnore-this: darcs-patches: "
+          prefix = BC.pack "\ndarcs-patches: "
           gzipped = compress . BLC.pack $ intercalate "\n" is
           base64ps = encode . BC.concat . BLC.toChunks $ gzipped
 
