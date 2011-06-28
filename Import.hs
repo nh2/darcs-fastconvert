@@ -239,7 +239,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           Sealed diff <- unFreeLeft `fmap`
             liftIO (treeDiff (const TextFile) start current)
           return $ InCommit mark branch current (reverseFL diff +<+ ps) info
-        diffCurrent _ = error "This is never valid outside of a commit."
+        diffCurrent _ = error "diffCurrent is never valid outside of a commit."
 
         checkForNewFile s@(InCommit mark branch start ps info) path = do
           let rawPath = BC.unpack path
@@ -261,6 +261,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Sealed diff <- unFreeLeft `fmap`
                 liftIO (treeDiff (const TextFile) start current)
               return $ InCommit mark branch current (reverseFL diff +<+ ps) info
+        checkForNewFile _ _ = error
+          "checkForNewFile is never valid outside of a commit."
 
         mergeIfNecessary :: Marked -> Merges -> TreeIO ()
         mergeIfNecessary _ [] = return ()
