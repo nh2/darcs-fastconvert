@@ -89,7 +89,7 @@ Executable darcs-fastconvert
                  zlib >= 0.5 && < 0.6
 
   -- Modules not exported by this package.
-  Other-modules: Export Import Marks Utils Bridge Stash
+  Other-modules: Export Import Marks Utils Bridge Stash Patch
 
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:

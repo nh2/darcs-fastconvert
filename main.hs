@@ -3,6 +3,7 @@ import qualified Marks
 import Import
 import Export
 import Bridge
+import Patch
 
 import Control.Monad.Trans ( liftIO )
 import qualified Data.ByteString.Lazy as BL
@@ -23,6 +24,7 @@ data Cmd = Import { debug :: Bool
                         , clone :: Bool}
          | Sync   { bridgePath :: String
                   , repoType :: VCSType }
+         | ApplyPatch { repo :: String }
          deriving (Eq, Typeable, Data)
 
 instance Attributes Cmd where
@@ -65,6 +67,7 @@ instance RecordCommand Cmd where
   mode_summary CreateBridge {} =
     "Create a darcs bridge, importing from git or darcs."
   mode_summary Sync   {} = "Sync an existing darcs bridge."
+  mode_summary ApplyPatch {} = "Apply a git patch to a darcs repo."
 
 runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
 runCmdWithMarks c = Marks.handleCmdMarks (readMarks c) (writeMarks c)
@@ -95,9 +98,13 @@ handleSync c = case bridgePath c of
   [] -> die "missing bridge-path argument."
   b  -> syncBridge False b (repoType c)
 
+handleApplyPatch :: Cmd -> IO ()
+handleApplyPatch c = readAndApplyGitEmail (repo c)
+
 main :: IO ()
 main = getArgs >>= dispatchR [] >>= \c -> case c of
   Import {} -> handleImport c
   Export {} -> handleExport c
   CreateBridge {} -> handleCreateBridge c
   Sync {}   -> handleSync c
+  ApplyPatch {} -> handleApplyPatch c
