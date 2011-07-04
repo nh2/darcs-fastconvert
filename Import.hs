@@ -123,7 +123,7 @@ fastImport debug inHandle printer repodir fmt =
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
-         let initState = Toplevel Nothing $ masterBranchName
+         let initState = Toplevel Nothing masterBranchName
          fastImport' debug repodir inHandle printer repo emptyMarks initState
 
 fastImportIncremental :: Bool -> Handle -> (String -> IO ()) -> String
@@ -136,7 +136,7 @@ fastImportIncremental debug inHandle printer repodir marks =
         let ancestor = case lastMark marks of
                 0 -> Nothing
                 n -> Just n
-            initState = Toplevel ancestor $ masterBranchName
+            initState = Toplevel ancestor masterBranchName
         fastImport' debug repodir inHandle printer repo marks initState
 
 fastImport' :: forall p r u . (RepoPatch p) => Bool -> FilePath -> Handle ->
@@ -186,11 +186,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         topLevelBranchDir :: ParsedBranchName -> FilePath
         topLevelBranchDir (ParsedBranchName b) = concat
-          [repodir, "-", (BC.unpack b)]
+          [repodir, "-", BC.unpack b]
 
         initBranch :: ParsedBranchName -> TreeIO ()
         initBranch b@(ParsedBranchName bName) = do
-          liftIO $ doDebug $ "Setting up branch dir for: " ++ (BC.unpack bName)
+          liftIO $ doDebug $ "Setting up branch dir for: " ++ BC.unpack bName
           inventory <- readFile $ branchInventoryPath b
           pristine <- readFile $ branchPristinePath b
           liftIO $ withCurrentDirectory ".." $ do
@@ -277,7 +277,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             Nothing -> do
               contents <- (BC.lines . BC.concat . BL.toChunks)
                 `fmap` readFile floatedPath
-              let hunkPatch = hunk rawPath 1 [] $ contents
+              let hunkPatch = hunk rawPath 1 [] contents
                   addPatches = hunkPatch :<: addfile rawPath :<: ps
               return $ InCommit mark branch current addPatches endps info
             -- If the file already existed, just diff.
@@ -309,14 +309,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           (B.ByteString, (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p))))
         tryParseDarcsPatches msg = case findSubStr of
           (_, after) | B.null after -> (msg, (seal2 NilRL, seal2 NilRL))
-          (prefix, patchBlob)-> 
+          (prefix, patchBlob)->
             let headerLen = length "darcs-patches: "
                 blobLines = BC.lines . BC.drop headerLen $ patchBlob
                 nonBlob = BC.unlines $ tail blobLines
                 base64Str = head blobLines
                 gzipped = decode base64Str in
             case gzipped of
-              Left e -> corrupt $ (BC.pack e) `BC.append` base64Str
+              Left e -> corrupt $ BC.pack e `BC.append` base64Str
               Right gzipped' ->
                 let strictify = BC.concat . BL.toChunks
                     lazify bl = BL.fromChunks [bl]
@@ -372,7 +372,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         process (Toplevel previous pbranch)
           (Commit branch mark author message from merges) = do
           liftIO $ doDebug $ "Handling commit beginning: " ++
-            (BC.unpack $ BC.take 20 message)
+            BC.unpack (BC.take 20 message)
           fromMark <- if pbranch /= branch
             then do
               liftIO $ doDebug $ unwords
@@ -393,22 +393,22 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch startstate prePatches postPatches info
 
         process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
-          liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
+          liftIO $ doDebug $ "Handling modify of: " ++ BC.unpack path
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           checkForNewFile s path
 
         process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
-          liftIO $ doDebug $ "Handling modify of: " ++ (BC.unpack path)
+          liftIO $ doDebug $ "Handling modify of: " ++ BC.unpack path
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           checkForNewFile s path
 
-        process (InCommit _ _ _ _ _ _) (Modify (ModifyHash hash) path) = do
+        process (InCommit _ _ _ _ _ _) (Modify (ModifyHash hash) path) =
           die $ unwords ["FATAL: Cannot currently handle Git hash:",
              BC.unpack hash, "for file", BC.unpack path,
              "Do not use the --no-data option of git fast-export."]
 
         process (InCommit mark branch _ ps endps info) (Delete path) = do
-          liftIO $ doDebug $ "Handling delete of: " ++ (BC.unpack path)
+          liftIO $ doDebug $ "Handling delete of: " ++ BC.unpack path
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
@@ -487,12 +487,12 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     finalizeRepositoryChanges repo
     let pristineDir = "_darcs" </> "pristine.hashed"
     pristines <- filter notdot `fmap` getDirectoryContents pristineDir
-    forM_ branches $ \b -> do
+    forM_ branches $ \b ->
       withCurrentDirectory
         (".." </> topLevelBranchDir (ParsedBranchName b)) $ do
         doDebug $
           "Linking pristines and copying patches/inventories for branch: "
-          ++ (BC.unpack b)
+          ++ BC.unpack b
         let origPristineDir = ".." </> repodir </> pristineDir
             origRepoDir = ".." </> repodir </> "_darcs"
         -- Hardlink all pristines.
@@ -506,7 +506,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                               ("_darcs" </> dir </> name)
 
         withRepository [] $ RepoJob $ \bRepo -> do
-          doDebug $ "Finalizing and cleaning branch repo: " ++ (BC.unpack b)
+          doDebug $ "Finalizing and cleaning branch repo: " ++ BC.unpack b
           finalizeRepositoryChanges bRepo
           createPristineDirectoryTree bRepo "."
           cleanRepository bRepo

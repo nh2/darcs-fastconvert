@@ -54,7 +54,7 @@ runtest t =
   withTmp =
    case testdir t of
      Just dir -> \job -> do
-       let d = (dir </> takeBaseName (testfile t))
+       let d = dir </> takeBaseName (testfile t)
        mkdir_p d
        job d
      Nothing  -> withTmpDir

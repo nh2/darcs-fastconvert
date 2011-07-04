@@ -72,12 +72,12 @@ data HunkLine = ContextLine B.ByteString
 
 readAndApplyGitEmail :: String -> IO ()
 readAndApplyGitEmail repoPath = withCurrentDirectory repoPath $ do
-  putStrLn $ "Attempting to parse input."
+  putStrLn "Attempting to parse input."
   ps <- parseGitEmail
   putStrLn $ "Successfully parsed " ++ (show . length $ ps) ++ " patches."
-  putStrLn $ "Attempting to apply patches."
+  putStrLn "Attempting to apply patches."
   mapM_ applyGitPatch ps
-  putStrLn $ "Succesfully applied patches."
+  putStrLn "Succesfully applied patches."
 
 applyGitPatch :: GitPatch -> IO ()
 applyGitPatch (GitPatch author date message changes) = do
@@ -118,7 +118,7 @@ applyChanges info changes repo = do
   addParentDirs :: FilePath -> IO (FreeLeft (FL (PrimOf p)))
   addParentDirs fp = do
     dirs <- dropWhileDirsExist $ getParents fp
-    let joiner d ds = joinGap (:>:) (freeGap $ adddir d) ds
+    let joiner d = joinGap (:>:) (freeGap $ adddir d)
     return $ foldr joiner (emptyGap NilFL) dirs
 
   getParents = tail . map joinPath . inits . splitPath . takeDirectory
@@ -154,197 +154,196 @@ missingFileHash = GitHash $ replicate 40 '0'
 emptyFileHash = GitHash "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
 parseGitEmail :: IO [GitPatch]
-parseGitEmail = go (A.parse $ many p_gitPatch) BC.empty
-  where lex :: A.Parser b -> A.Parser b
-        lex p = p >>= \x -> A.skipSpace >> return x
+parseGitEmail = go (A.parse $ many p_gitPatch) BC.empty where
+  lex :: A.Parser b -> A.Parser b
+  lex p = p >>= \x -> A.skipSpace >> return x
 
-        lexString s = lex $ A.string (BC.pack s)
-        line = lex $ A.takeWhile (/= '\n')
+  lexString s = lex $ A.string (BC.pack s)
+  line = lex $ A.takeWhile (/= '\n')
 
-        -- | @toEOL@ will consume to the end of the line, but not any leading
-        -- whitespace on the following line, unline @line@.
-        toEOL = A.takeWhile (/= '\n') >>= \x -> A.char '\n' >> return x
+  -- | @toEOL@ will consume to the end of the line, but not any leading
+  -- whitespace on the following line, unline @line@.
+  toEOL = A.takeWhile (/= '\n') >>= \x -> A.char '\n' >> return x
 
-        optional :: (Alternative f, Monad f) => f a -> f (Maybe a)
-        optional p = Just `fmap` p <|> return Nothing
+  optional :: (Alternative f, Monad f) => f a -> f (Maybe a)
+  optional p = Just `fmap` p <|> return Nothing
 
-        p_gitPatch = do
-          p_commitHeader
-          author <- p_author
-          date <- p_date
-          msg <- p_commitMsg
-          _ <- specialLineDelimited BC.empty id -- skip the diff summary
-          diffs <- many $ p_diff
-          _ <- p_endMarker
-          return $ GitPatch author date msg diffs
+  p_gitPatch = do
+    p_commitHeader
+    author <- p_author
+    date <- p_date
+    msg <- p_commitMsg
+    _ <- specialLineDelimited BC.empty id -- skip the diff summary
+    diffs <- many p_diff
+    _ <- p_endMarker
+    return $ GitPatch author date msg diffs
 
-        p_endMarker = do
-          lexString "--" >> toEOL
-          line -- This line contains a git version number.
+  p_endMarker = do
+    lexString "--" >> toEOL
+    line -- This line contains a git version number.
 
-        p_commitHeader = do
-          lexString "From"
-          p_hash
-          lexString "Mon Sep 17 00:00:00 2001"
+  p_commitHeader = do
+    lexString "From"
+    p_hash
+    lexString "Mon Sep 17 00:00:00 2001"
 
-        p_author = lexString "From:" >> line
+  p_author = lexString "From:" >> line
 
-        p_date = do
-          lexString "Date:"
-          dateStr <- BC.unpack `fmap` line
-          let mbDate = parseDateTime "%a, %e %b %Y %k:%M:%S %z" dateStr
-          case mbDate of
-            Nothing -> error $ "Unexpected dateformat: " ++ dateStr
-            Just date' -> return date'
+  p_date = do
+    lexString "Date:"
+    dateStr <- BC.unpack `fmap` line
+    let mbDate = parseDateTime "%a, %e %b %Y %k:%M:%S %z" dateStr
+    case mbDate of
+      Nothing -> error $ "Unexpected dateformat: " ++ dateStr
+      Just date' -> return date'
 
-        p_commitMsg = do
-          lexString "Subject:"
-          p_logLines
+  p_commitMsg = do
+    lexString "Subject:"
+    p_logLines
 
-        p_logLines = specialLineDelimited (BC.pack "---") reverse
+  p_logLines = specialLineDelimited (BC.pack "---") reverse
 
-        specialLineDelimited = specialLineDelimited' [] where
-        specialLineDelimited' ls endCase endMod = do
-          perhaps <- toEOL
-          if perhaps == endCase
-            then return . endMod $ ls
-            else specialLineDelimited' (perhaps : ls) endCase endMod
+  specialLineDelimited = specialLineDelimited' [] where
+  specialLineDelimited' ls endCase endMod = do
+    perhaps <- toEOL
+    if perhaps == endCase
+      then return . endMod $ ls
+      else specialLineDelimited' (perhaps : ls) endCase endMod
 
-        p_hash = (GitHash . BC.unpack) `fmap` (lex $ A.takeWhile1
-          (A.inClass "0-9a-fA-F"))
+  p_hash = (GitHash . BC.unpack) `fmap` lex (A.takeWhile1
+    (A.inClass "0-9a-fA-F"))
 
-        p_diff = do
-          fn <- BC.unpack `fmap` p_diffHeader
-          -- TODO: handle new file modes?
-          mbAddRemove <- optional $ p_addFile <|> p_removeFile
-          (oldIndex, newIndex, _) <- p_indexDiff
-          case mbAddRemove of
-            Nothing -> Hunk fn oldIndex `fmap` p_unifiedDiff
-            Just (addRem, _) -> if addRem == (BC.pack "new")
-              then if newIndex == emptyFileHash
-                     then return $ AddFile fn []
-                     else p_allAddLines >>= \ls -> return $ AddFile fn ls
-              else p_allRemLines >>= \ls -> return $ RmFile fn ls
+  p_diff = do
+    fn <- BC.unpack `fmap` p_diffHeader
+    -- TODO: handle new file modes?
+    mbAddRemove <- optional $ p_addFile <|> p_removeFile
+    (oldIndex, newIndex, _) <- p_indexDiff
+    case mbAddRemove of
+      Nothing -> Hunk fn oldIndex `fmap` p_unifiedDiff
+      Just (addRem, _) -> if addRem == BC.pack "new"
+        then if newIndex == emptyFileHash
+               then return $ AddFile fn []
+               else p_allAddLines >>= \ls -> return $ AddFile fn ls
+        else p_allRemLines >>= \ls -> return $ RmFile fn ls
 
-        p_addFile = p_addRemoveFile "new"
-        p_removeFile = p_addRemoveFile "deleted"
+  p_addFile = p_addRemoveFile "new"
+  p_removeFile = p_addRemoveFile "deleted"
 
-        p_addRemoveFile x = do
-          x' <- lexString x
-          lexString "file mode"
-          mode <- p_mode
-          return (x', mode)
+  p_addRemoveFile x = do
+    x' <- lexString x
+    lexString "file mode"
+    mode <- p_mode
+    return (x', mode)
 
-        p_unifiedFiles = lexString "---" >> line >> lexString "+++" >> line
+  p_unifiedFiles = lexString "---" >> line >> lexString "+++" >> line
 
-        p_unifiedDiff = do
-          p_unifiedFiles
-          many $ p_unifiedHunk
+  p_unifiedDiff = do
+    p_unifiedFiles
+    many p_unifiedHunk
 
-        p_unifiedHunk = do
-          lexString "@@ -"
-          (_, oldLength) <- p_linePosLengthPair
-          A.char '+'
-          (newPos, newLength) <- p_linePosLengthPair
-          toEOL
-          (oldLines, newLines) <- p_diffLines oldLength newLength
-          checkLength oldLength oldLines
-          checkLength newLength newLines
-          -- We use new pos, since old pos assumes that no other hunks have
-          -- been applied to the original file, whereas we want our changes to
-          -- be cumulative.
-          return . minimiseHunkChange $ HunkChange newPos oldLines newLines
-          where
-          checkLength expectedLen list = let realLen = length list in
-            unless (realLen == expectedLen) $
-              error . unwords $ ["Malformed diff: expected length"
-                                , show expectedLen , "got" , show realLen, "in"
-                                , show list]
+  p_unifiedHunk = do
+    lexString "@@ -"
+    (_, oldLength) <- p_linePosLengthPair
+    A.char '+'
+    (newPos, newLength) <- p_linePosLengthPair
+    toEOL
+    (oldLines, newLines) <- p_diffLines oldLength newLength
+    checkLength oldLength oldLines
+    checkLength newLength newLines
+    -- We use new pos, since old pos assumes that no other hunks have
+    -- been applied to the original file, whereas we want our changes to
+    -- be cumulative.
+    return . minimiseHunkChange $ HunkChange newPos oldLines newLines
+    where
+    checkLength expectedLen list = let realLen = length list in
+      unless (realLen == expectedLen) $
+        error . unwords $ ["Malformed diff: expected length"
+                          , show expectedLen , "got" , show realLen, "in"
+                          , show list]
 
-          -- |@minimiseHunkChange@ removes any leading equal lines
-          -- (incrementing the line number appropriately) and any trailing
-          -- equal lines.
-          minimiseHunkChange x@(HunkChange _ _ _) = HunkChange p' o'' n'' where
-            x'@(HunkChange p' _ _) = dropWhileEqual x
+    -- |@minimiseHunkChange@ removes any leading equal lines
+    -- (incrementing the line number appropriately) and any trailing
+    -- equal lines.
+    minimiseHunkChange x@(HunkChange _ _ _) = HunkChange p' o'' n'' where
+      x'@(HunkChange p' _ _) = dropWhileEqual x
 
-            (HunkChange _ o'' n'') =
-              reverseHunkChange . dropWhileEqual . reverseHunkChange $ x'
+      (HunkChange _ o'' n'') =
+        reverseHunkChange . dropWhileEqual . reverseHunkChange $ x'
 
-            reverseHunkChange (HunkChange p o n) =
-              HunkChange p (reverse o) (reverse n)
+      reverseHunkChange (HunkChange p o n) =
+        HunkChange p (reverse o) (reverse n)
 
-            dropWhileEqual orig@(HunkChange _ [] _) = orig
-            dropWhileEqual orig@(HunkChange _ _ []) = orig
-            dropWhileEqual orig@(HunkChange n (p : ps) (q : qs)) = if p == q
-              then dropWhileEqual $ HunkChange (n + 1) ps qs
-              else orig
+      dropWhileEqual orig@(HunkChange _ [] _) = orig
+      dropWhileEqual orig@(HunkChange _ _ []) = orig
+      dropWhileEqual orig@(HunkChange n (p : ps) (q : qs)) = if p == q
+        then dropWhileEqual $ HunkChange (n + 1) ps qs
+        else orig
 
-        p_diffLines oldCount newCount =
-          p_diffLines' (oldCount, newCount) ([], []) where
-            p_diffLines' (0, 0) (olds, news) =
-              return (reverse olds, reverse news)
-            p_diffLines' (o, n) (olds, news) = do
-              l <- p_addLine <|> p_removeLine <|> p_contextLine
-              case l of
-                (ContextLine l') ->
-                  p_diffLines' (o - 1, n - 1) (l' : olds, l' : news)
-                (AddedLine l') -> p_diffLines' (o, n - 1) (olds, l' : news)
-                (RemovedLine l') -> p_diffLines' (o - 1, n) (l' : olds, news)
+  p_diffLines oldCount newCount =
+    p_diffLines' (oldCount, newCount) ([], []) where
+      p_diffLines' (0, 0) (olds, news) =
+        return (reverse olds, reverse news)
+      p_diffLines' (o, n) (olds, news) = do
+        l <- p_addLine <|> p_removeLine <|> p_contextLine
+        case l of
+          (ContextLine l') ->
+            p_diffLines' (o - 1, n - 1) (l' : olds, l' : news)
+          (AddedLine l') -> p_diffLines' (o, n - 1) (olds, l' : news)
+          (RemovedLine l') -> p_diffLines' (o - 1, n) (l' : olds, news)
 
-            p_addLine = A.char '+' >> AddedLine `fmap` toEOL
-            p_removeLine = A.char '-' >> RemovedLine `fmap` toEOL
-            p_contextLine = A.char ' ' >> ContextLine `fmap` toEOL
+      p_addLine = A.char '+' >> AddedLine `fmap` toEOL
+      p_removeLine = A.char '-' >> RemovedLine `fmap` toEOL
+      p_contextLine = A.char ' ' >> ContextLine `fmap` toEOL
 
-        p_linePosLengthPair = do
-          l <- p_readLineInt
-          A.char ','
-          s <- lex $ p_readLineInt
-          -- If the chunksize is 0, then we need to increment the offset
-          return (if s == 0 then l + 1 else l, s)
+  p_linePosLengthPair = do
+    l <- p_readLineInt
+    A.char ','
+    s <- lex p_readLineInt
+    -- If the chunksize is 0, then we need to increment the offset
+    return (if s == 0 then l + 1 else l, s)
 
-        p_readLineInt =
-          (fst . fromJust . BC.readInt) `fmap` A.takeWhile (A.inClass "0-9")
+  p_readLineInt =
+    (fst . fromJust . BC.readInt) `fmap` A.takeWhile (A.inClass "0-9")
 
-        p_allAddLines = do
-          [(HunkChange _ [] new)] <- p_unifiedDiff
-          return new
+  p_allAddLines = do
+    [HunkChange _ [] new] <- p_unifiedDiff
+    return new
 
-        p_allRemLines = do
-          [(HunkChange _ old [])] <- p_unifiedDiff
-          return old
+  p_allRemLines = do
+    [HunkChange _ old []] <- p_unifiedDiff
+    return old
 
-        p_diffHeader = do
-          lexString "diff --git"
-          (oldName, _) <- splitNames `fmap` line
-          return . BC.tail . BC.dropWhile (not . isPathSeparator) $ oldName
-          where
-          -- Something of the form: prefixA/foo prefixB/foo where foo may
-          -- contain spaces (so we have to split at half way).
-          splitNames l = let (a,b) = BC.splitAt (BC.length l `div` 2) l
-            in (a, BC.tail b)
+  p_diffHeader = do
+    lexString "diff --git"
+    (oldName, _) <- splitNames `fmap` line
+    return . BC.tail . BC.dropWhile (not . isPathSeparator) $ oldName
+    where
+    -- Something of the form: prefixA/foo prefixB/foo where foo may
+    -- contain spaces (so we have to split at half way).
+    splitNames l = let (a,b) = BC.splitAt (BC.length l `div` 2) l
+      in (a, BC.tail b)
 
-        p_indexDiff = do
-          lexString "index"
-          oldHash <- p_hash
-          lexString ".."
-          newHash <- p_hash
-          mbMode <- optional p_mode
-          return (oldHash, newHash, mbMode)
+  p_indexDiff = do
+    lexString "index"
+    oldHash <- p_hash
+    lexString ".."
+    newHash <- p_hash
+    mbMode <- optional p_mode
+    return (oldHash, newHash, mbMode)
 
-        p_mode = lex $ A.takeWhile (A.inClass "0-9")
+  p_mode = lex $ A.takeWhile (A.inClass "0-9")
 
-        go :: (B.ByteString -> A.Result [GitPatch]) -> B.ByteString
-          -> IO [GitPatch]
-        go parser rest =
-          do chunk <- if B.null rest then liftIO $ B.hGet stdin (64 * 1024)
-                                     else return rest
-             go_chunk parser chunk
-        go_chunk parser chunk =
-          case parser chunk of
-             A.Done _ result -> return result
-             A.Partial cont -> go cont B.empty
-             A.Fail _ ctx err -> do
-               let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++
-                     "\n=== end chunk ===="
-               fail $ unwords ["Error parsing stream.", err, ch,  "\nContext:"
-                              , show ctx]
+  go :: (B.ByteString -> A.Result [GitPatch]) -> B.ByteString -> IO [GitPatch]
+  go parser rest = do
+    chunk <- if B.null rest then liftIO $ B.hGet stdin (64 * 1024)
+                            else return rest
+    go_chunk parser chunk
+  go_chunk parser chunk =
+    case parser chunk of
+      A.Done _ result -> return result
+      A.Partial cont -> go cont B.empty
+      A.Fail _ ctx err -> do
+        let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++
+              "\n=== end chunk ===="
+        fail $ unwords ["Error parsing stream.", err, ch,  "\nContext:"
+                       , show ctx]
