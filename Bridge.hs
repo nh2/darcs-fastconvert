@@ -1,18 +1,23 @@
 {-# LANGUAGE DeriveDataTypeable #-}
-module Bridge( createBridge, syncBridge, VCSType(..) ) where
+module Bridge( createBridge, syncBridge, VCSType(..), listBranches, addBranch
+             , removeBranch, RepoBranch(..) ) where
 
 import Export ( fastExport )
 import Import ( fastImportIncremental )
 import Marks ( handleCmdMarks )
-import Utils ( die )
+import Stash ( topLevelBranchDir, parseBranch )
+import Utils ( die, fp2bn, equalHead )
 
-import Control.Monad ( when, unless )
+import Control.Monad ( when, unless, forM, foldM )
 import Control.Monad.Error ( join )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Error
 import qualified Data.ByteString.Lazy.Char8 as BL
-import Data.ConfigFile ( emptyCP, set, to_string, readfile, get )
+import qualified Data.ByteString.Char8 as BC
+import Data.ConfigFile ( emptyCP, set, to_string, readfile, get, sections
+                       , setshow, has_section, add_section )
 import Data.Data ( Data, Typeable )
+import Data.List ( isPrefixOf, partition )
 import Data.Either.Utils ( forceEither )
 import System.Directory ( createDirectory, canonicalizePath
                         , setCurrentDirectory, getCurrentDirectory, copyFile
@@ -23,13 +28,17 @@ import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
-import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess )
+import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess
+                      , readProcess )
 
 import Darcs.Commands ( commandCommand )
 import qualified Darcs.Commands.Get as DCG
 import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2, Quiet) )
 import Darcs.Lock ( withLockCanFail )
-import Darcs.Repository ( amNotInRepository, createRepository )
+import Darcs.Patch.Set ( newset2FL )
+import Darcs.Repository ( Repository, RepoJob(..), readRepo, withRepository
+                        , amNotInRepository, createRepository )
+import Darcs.Repository.Internal ( identifyRepositoryFor )
 import Darcs.Repository.Prefs ( addToPreflist )
 import Darcs.Utils ( withCurrentDirectory )
 
@@ -44,7 +53,13 @@ instance Show VCSType where
 
 data BridgeConfig = BridgeConfig { darcs_path :: FilePath
                                  , git_path   :: FilePath
-                                 }
+                                 , cloned     :: Bool
+                                 , branches   :: [(String, FilePath)]
+                                 } deriving Show
+
+-- New branches are either a Darcs repo path, or a Git branch name.
+data RepoBranch = DarcsBranch FilePath
+                | GitBranch String
 
 otherVCS :: VCSType -> VCSType
 otherVCS Darcs = Git
@@ -73,6 +88,7 @@ gitImportMarksName = "git_import_marks"
 -- otherwise, the target repository is created alongside the source repo.
 createBridge :: FilePath -> Bool -> IO ()
 createBridge repoPath shouldClone = do
+    -- TODO: Create bridge for repos with branches?
     fullOrigRepoPath <- canonicalizePath repoPath
     repoType <- identifyRepoType fullOrigRepoPath
     putStrLn $ unwords
@@ -89,7 +105,8 @@ createBridge repoPath shouldClone = do
     createDirectory bridgeDirName
     putStrLn $ unwords ["Initialised target", show $ otherVCS repoType,
                         "repo at", targetRepoPath]
-    let config   = createConfig repoType sourceRepoPath targetRepoPath
+    let config = createConfig repoType sourceRepoPath targetRepoPath
+          shouldClone []
     putStrLn $ "Created " ++ bridgeDirName ++ " in " ++ topLevelDir
     withCurrentDirectory bridgeDirName $ do
         writeFile "config" $ stringifyConfig config
@@ -124,17 +141,6 @@ createBridge repoPath shouldClone = do
         cloneRepo vcsType origRepoPath clonedRepoPath
         return (topLevelDir, clonedRepoPath)
 
-    cloneRepo :: VCSType -> FilePath -> FilePath -> IO ()
-    -- This feels like a hack, since getCmd isn't exported.
-    cloneRepo Darcs old new = commandCommand DCG.get [Quiet] [old, new]
-    cloneRepo _ old new = do
-        cloneProcHandle <- runProcess
-            "git" ["clone", "-q", old, new]
-        --  workDir Env     stdin   stdout  stderr
-            Nothing Nothing Nothing Nothing Nothing
-        cloneEC <- waitForProcess cloneProcHandle
-        when (cloneEC /= ExitSuccess) (die "Git clone failed!")
-
     identifyRepoType :: FilePath -> IO VCSType
     identifyRepoType path = do
         let searchDirs = [(["_darcs"], Darcs),
@@ -154,29 +160,10 @@ createBridge repoPath shouldClone = do
                 then return (Just vcsType)
                 else identifyRepoType' p fs
 
-    initTargetRepo :: FilePath -> VCSType -> IO FilePath
-    initTargetRepo fullRepoPath repoType = do
-        let newPath = fullRepoPath ++ "_" ++ show (otherVCS repoType)
-        initTargetRepo' repoType newPath
-        return newPath
-
-    initTargetRepo' :: VCSType -> FilePath -> IO ()
-    initTargetRepo' Darcs newPath = do
-        initProcHandle <- runCommand $ "git init -q --bare " ++ newPath
-        initEC <- waitForProcess initProcHandle
-        when (initEC /= ExitSuccess) (die "Git init failed!")
-    initTargetRepo' _ newPath = do
-        amNotInRepository [WorkRepoDir newPath] -- create repodir
-        createRepository [UseFormat2] -- create repo
-
-    createConfig :: VCSType -> FilePath -> FilePath -> BridgeConfig
+    createConfig :: VCSType -> FilePath -> FilePath -> Bool
+      -> [(String, FilePath)] -> BridgeConfig
     createConfig Darcs = BridgeConfig
     createConfig _     = flip BridgeConfig
-
-    stringifyConfig :: BridgeConfig -> String
-    stringifyConfig conf = to_string $ forceEither $ do
-        cp <- set emptyCP "DEFAULT" "darcs_path" (darcs_path conf)
-        set cp "DEFAULT" "git_path" (git_path conf)
 
     fullPerms :: FileMode
     fullPerms = foldr unionFileModes nullFileMode
@@ -208,90 +195,122 @@ createBridge repoPath shouldClone = do
         withCurrentDirectory darcsPath $
             addToPreflist "defaults" "apply prehook ./_darcs/hooks/pre-apply"
 
+cloneRepo :: VCSType -> FilePath -> FilePath -> IO ()
+-- This feels like a hack, since getCmd isn't exported.
+cloneRepo Darcs old new = commandCommand DCG.get [Quiet] [old, new]
+cloneRepo _ old new = do
+    cloneProcHandle <- runProcess
+        "git" ["clone", "-q", old, new]
+    --  workDir Env     stdin   stdout  stderr
+        Nothing Nothing Nothing Nothing Nothing
+    cloneEC <- waitForProcess cloneProcHandle
+    when (cloneEC /= ExitSuccess) (die "Git clone failed!")
+
+stringifyConfig :: BridgeConfig -> String
+stringifyConfig conf = to_string $ forceEither $ do
+    cp <- set emptyCP "DEFAULT" "darcs_path" (darcs_path conf)
+    cp <- set cp "DEFAULT" "git_path" (git_path conf)
+    cp <- setshow cp "DEFAULT" "cloned" (cloned conf)
+    let bs = filter ((/= "master") . fst) $ branches conf
+    foldM (\cp (bName, bDarcsPath) -> do
+      let sectionName = "branch/" ++ bName
+          isNewBranch = not $ has_section cp sectionName
+      cp <- if isNewBranch then add_section cp sectionName else return cp
+      cp <- set cp sectionName "name" bName
+      set cp sectionName "darcs_path" bDarcsPath) cp bs
+
+initTargetRepo :: FilePath -> VCSType -> IO FilePath
+initTargetRepo fullRepoPath repoType = do
+    let newPath = fullRepoPath ++ "_" ++ show (otherVCS repoType)
+    initTargetRepo' repoType newPath
+    return newPath
+
+initTargetRepo' :: VCSType -> FilePath -> IO ()
+initTargetRepo' Darcs newPath = do
+    initProcHandle <- runCommand $ "git init -q --bare " ++ newPath
+    initEC <- waitForProcess initProcHandle
+    when (initEC /= ExitSuccess) (die "Git init failed!")
+initTargetRepo' _ newPath = do
+    amNotInRepository [WorkRepoDir newPath] -- create repodir
+    createRepository [UseFormat2] -- create repo
+
 -- |syncBridge takes a bridge folder location and a target vcs-type, and
 -- attempts to pull in any changes from the other repo, having obtained the
 -- lock, to prevent concurrent access. If this is the first sync, out-of-date
 -- warnings and exitFailure aren't performed.
 syncBridge :: Bool -> FilePath -> VCSType -> IO ()
-syncBridge firstSync bridgePath repoType = do
-    fullBridgePath <- canonicalizePath bridgePath
-    setCurrentDirectory fullBridgePath
-    gotLock <-
-      withLockCanFail "lock" (syncBridge' firstSync fullBridgePath repoType)
-    case gotLock of
-        Left _ -> putStrLn "Cannot take bridge lock!" >> exitFailure
-        _      -> exitSuccess
+syncBridge firstSync bridgePath repoType =
+  withBridgeLock bridgePath (\bPath -> syncBridge' firstSync bPath repoType)
 
+-- |syncBridge' actually does the sync, and assumes that a bridge lock is
+-- currently held.
 syncBridge' :: Bool -> FilePath -> VCSType -> IO ()
 syncBridge' firstSync fullBridgePath repoType = do
-    errConfig <- runErrorT $ getConfig fullBridgePath
-    case errConfig of
-        Left _ -> die $ "Malformed/missing config file in " ++ fullBridgePath
-        Right config -> do
-            let converter = createConverter repoType config fullBridgePath
-                bridgeFile fn = fullBridgePath </> fn
-                marksFile fn = joinPath [fullBridgePath, "marks", fn]
-                exportData = bridgeFile "darcs_bridge_export"
-                oldSourceMarks = bridgeFile "old_source_marks"
-                sourceMarks = marksFile $ sourceExportMarks converter
-                oldTargetMarks = bridgeFile "old_target_marks"
-                targetMarks = marksFile $ targetExportMarks converter
-                importMarks = marksFile $ sourceImportMarks converter
-                tempImportMarks = bridgeFile "import_marks"
-                tempUpdateMarks = bridgeFile "temp_update_marks"
+    config <- getConfig fullBridgePath
+    let converter = createConverter repoType config fullBridgePath
+        bridgeFile fn = fullBridgePath </> fn
+        marksFile fn = joinPath [fullBridgePath, "marks", fn]
+        exportData = bridgeFile "darcs_bridge_export"
+        oldSourceMarks = bridgeFile "old_source_marks"
+        sourceMarks = marksFile $ sourceExportMarks converter
+        oldTargetMarks = bridgeFile "old_target_marks"
+        targetMarks = marksFile $ targetExportMarks converter
+        importMarks = marksFile $ sourceImportMarks converter
+        tempImportMarks = bridgeFile "import_marks"
+        tempUpdateMarks = bridgeFile "temp_update_marks"
 
-            putStrLn $ "Copying old sourcemarks: " ++ sourceMarks
-            copyFile sourceMarks oldSourceMarks
-            putStrLn "Doing export."
-            exporter converter exportData
-            size <- withFile exportData ReadMode hFileSize
-            when (size > 0) (do
-                putStrLn "Doing import."
-                importer converter exportData
-                putStrLn $ "Copying old targetmarks: " ++ targetMarks
-                -- We need to ensure that the exporting repo knows about the
-                -- mark ids of the just-imported data. We export on the
-                -- just-imported repo, to update the marks file.
-                copyFile targetMarks oldTargetMarks
-                putStrLn "Doing mark update export."
-                -- No /dev/null on windows, so output to temp file.
-                markUpdater converter tempUpdateMarks
-                -- We diff the marks files on both sides, to discover the newly
-                -- added marks. This will allow us to manually update the
-                -- import marks file of the original exporter.
-                putStrLn "Diffing marks."
-                newSourceExportMarks <-
-                  diffExportMarks oldSourceMarks sourceMarks
-                newTargetExportMarks <-
-                  diffExportMarks oldTargetMarks targetMarks
-                -- We want the source patch ids with the target mark ids
-                let patchIDs = map ((!! 1).words) newSourceExportMarks
-                    markIDs = map ((!! 0).words) newTargetExportMarks
-                    markFudger m p = alterMark m ++ " " ++ p
-                    newEntries = zipWith markFudger markIDs patchIDs
-                putStrLn $ show (length newEntries) ++ " marks to append."
-                -- Prepend new entries to the marks file
-                writeFile tempImportMarks $ unlines newEntries
-                existingImportMarks <- readFile importMarks
-                appendFile tempImportMarks existingImportMarks
-                renameFile tempImportMarks importMarks
-                putStrLn "Import marks updated."
-                mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
-                    tempUpdateMarks]
+    putStrLn $ "Copying old sourcemarks: " ++ sourceMarks
+    copyFile sourceMarks oldSourceMarks
+    putStrLn "Doing export."
+    exporter converter exportData
+    size <- withFile exportData ReadMode hFileSize
+    when (size > 0) (do
+        putStrLn "Doing import."
+        importer converter exportData
+        putStrLn $ "Copying old targetmarks: " ++ targetMarks
+        -- We need to ensure that the exporting repo knows about the
+        -- mark ids of the just-imported data. We export on the
+        -- just-imported repo, to update the marks file.
+        copyFile targetMarks oldTargetMarks
+        putStrLn "Doing mark update export."
+        -- No /dev/null on windows, so output to temp file.
+        markUpdater converter tempUpdateMarks
+        -- We diff the marks files on both sides, to discover the newly
+        -- added marks. This will allow us to manually update the
+        -- import marks file of the original exporter.
+        putStrLn "Diffing marks."
+        newSourceExportMarks <-
+          diffExportMarks oldSourceMarks sourceMarks
+        newTargetExportMarks <-
+          diffExportMarks oldTargetMarks targetMarks
+        -- We want the source patch ids with the target mark ids
+        let patchIDs = map ((!! 1).words) newSourceExportMarks
+            markIDs = map ((!! 0).words) newTargetExportMarks
+            markFudger m p = alterMark m ++ " " ++ p
+            newEntries = zipWith markFudger markIDs patchIDs
+        putStrLn $ show (length newEntries) ++ " marks to append."
+        -- Prepend new entries to the marks file
+        writeFile tempImportMarks $ unlines newEntries
+        existingImportMarks <- readFile importMarks
+        appendFile tempImportMarks existingImportMarks
+        renameFile tempImportMarks importMarks
+        putStrLn "Import marks updated."
+        mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
+            tempUpdateMarks]
 
-                if firstSync
-                  then do
-                      putStrLn "Bridge successfully synced."
-                      exitSuccess
-                  else do
-                      putStrLn $ "Changes were pulled in via the bridge,"
-                              ++ " update your local repo."
-                      -- non-zero exit-code to signal to the VCS that action is
-                      -- required by the user before allowing the push/apply.
-                      exitFailure)
-            mapM_ removeFile [oldSourceMarks, exportData]
-            putStrLn "No changes to pull in via the bridge."
-            exitSuccess
+        if firstSync
+          then do
+              putStrLn "Bridge successfully synced."
+              exitSuccess
+          else do
+              putStrLn $ "Changes were pulled in via the bridge,"
+                      ++ " update your local repo."
+              -- non-zero exit-code to signal to the VCS that action is
+              -- required by the user before allowing the push/apply.
+              exitFailure)
+    mapM_ removeFile [oldSourceMarks, exportData]
+    putStrLn "No changes to pull in via the bridge."
+    exitSuccess
   where
     -- Darcs and Git marks both contain a colon, but it is situated at opposite
     -- ends of the mark. Since we are copying the marks from one repo to
@@ -315,12 +334,27 @@ syncBridge' firstSync fullBridgePath repoType = do
     diffExportMarks' []     = id
     diffExportMarks' (x:_) = takeWhile (/= x)
 
-    getConfig bridgePath = do
-        configFile <- join $ liftIO $
-          readfile emptyCP (bridgePath </> "config")
-        darcsPath <- get configFile "DEFAULT" "darcs_path"
-        gitPath   <- get configFile "DEFAULT" "git_path"
-        return $ BridgeConfig darcsPath gitPath
+getConfig :: FilePath -> IO BridgeConfig
+getConfig fullBridgePath = do
+  errConfig <- runErrorT $ readConfig fullBridgePath
+  case errConfig of
+      Left e -> die $ "Malformed/missing config file in " ++ fullBridgePath
+        ++ "\nerror: " ++ show e
+      Right config -> return config
+  where
+    readConfig bridgePath = do
+      configFile <- join $ liftIO $ readfile emptyCP (bridgePath </> "config")
+      wasCloned <- get configFile "DEFAULT" "cloned"
+      darcsPath <- get configFile "DEFAULT" "darcs_path"
+      gitPath   <- get configFile "DEFAULT" "git_path"
+      let bSections = filter ("branch/" `isPrefixOf`) $ sections configFile
+          readBranchSection section = do
+           name <- get configFile section "name"
+           path <- get configFile section "darcs_path"
+           return (name, path)
+          masterBranch = ("master", darcsPath)
+      branches <- (masterBranch :) `fmap` forM bSections readBranchSection
+      return $ BridgeConfig darcsPath gitPath wasCloned branches
 
 -- createConverter creates a converter that will pull changes into the repo of
 -- type targetRepoType
@@ -347,7 +381,8 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         \input -> fastImportIncremental True input putStrLn darcsPath
 
     darcsExport target = darcsFCCmd target WriteMode darcsExportMarksName $
-        \output -> fastExport (printer output) darcsPath [] -- TODO: list branches
+        \output -> fastExport (printer output) darcsPath
+          (map snd $ branches config)
       where
         printer h s = liftIO $ BL.hPut h s >> BL.hPut h (BL.singleton '\n')
 
@@ -358,14 +393,15 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
                           (die "A subcommand failed!")
 
     gitExport target = waitForGit $ rawGitExport target
+      (map fst $ branches config)
     gitImport source = waitForGit $ rawGitImport source
 
-    rawGitExport target = do
+    rawGitExport target branchList = do
         let marksPath = makeMarkPath gitExportMarksName
         withFile target WriteMode (\output ->
            runProcess "git"
-                ["fast-export", "--export-marks="++marksPath,
-                 "--import-marks="++marksPath, "-M", "-C", "HEAD"]
+                (["fast-export", "--export-marks="++marksPath,
+                 "--import-marks="++marksPath, "-M", "-C"] ++ branchList)
                 (Just gitPath) Nothing Nothing (Just output) Nothing)
 
     rawGitImport source = do
@@ -391,3 +427,80 @@ createPreHook bridgeDir = unlines hook where
          , "echo \"Pulling in any changes from the $other repo...\"\n"
          , "darcs-fastconvert sync --bridge=" ++ bridgeDir
            ++ " --repo-type=$1\n" ]
+
+-- |listBranches returns a list of branches that are managed by the bridge.
+listBranches :: FilePath -> IO [(String, FilePath)]
+listBranches bridgePath = withBridgeLock bridgePath $ \fullBridgePath ->
+  branches `fmap` getConfig fullBridgePath
+
+addBranch :: FilePath -> RepoBranch -> IO ()
+addBranch bridgePath (GitBranch bName) =
+  withBridgeLock bridgePath $ \fullBridgePath -> do
+    config <- getConfig fullBridgePath
+    withCurrentDirectory (git_path config) $ do
+      gitBranches <- splitBranches `fmap` readProcess "git" ["branch", "-a"] ""
+      unless (bName `elem` gitBranches) $
+        die $ "git branch " ++  bName ++ " doesn't exist."
+      let darcsRepoDir = topLevelBranchDir (darcs_path config)
+            (parseBranch . BC.pack $ "refs/heads/" ++ bName)
+      createDirectory darcsRepoDir
+      initTargetRepo' Git darcsRepoDir
+      addBranchToConfig fullBridgePath config (bName, darcsRepoDir)
+      syncBridge' True fullBridgePath Darcs
+  where
+    splitBranches = map dropLeading . lines
+    -- |dropLeading removes any leading whitespace and current-branch markers.
+    dropLeading ('*':s) = dropLeading s
+    dropLeading (' ':s) = dropLeading s
+    dropLeading s       = s
+
+addBranch bridgePath (DarcsBranch bPath) =
+  withBridgeLock bridgePath $ \fullBridgePath -> do
+    config <- getConfig fullBridgePath
+    withCurrentDirectory (darcs_path config) $
+      withRepository [] $ RepoJob $ \repo -> do
+        bRepo <- identifyRepositoryFor repo bPath
+        mainPatches <- newset2FL `fmap` readRepo repo
+        branchPatches <- newset2FL `fmap` readRepo bRepo
+        -- We'd rather fail now, than on the next export.
+        unless (equalHead mainPatches branchPatches) $
+          die "Cannot add branch that doesn't share patch #1 with master."
+        let bName = fp2bn bPath
+        clonePath <- canonicalizePath $ ".." </> bName
+        fullBranchPath <- canonicalizePath bPath
+        repoLocation <-
+          if cloned config
+            then cloneRepo Darcs bPath clonePath >> return clonePath
+            else return fullBranchPath
+        addBranchToConfig fullBridgePath config (bName, repoLocation)
+        syncBridge' True fullBridgePath Git
+
+addBranchToConfig fullBridgePath config branch = do
+  when (branch `elem` branches config) $
+    die $ "Branch " ++ fst branch ++ " is already managed by the bridge!"
+  let newBranches = branch : branches config
+  writeFile (fullBridgePath </> "config") $ stringifyConfig $
+    config { branches = newBranches }
+
+removeBranch :: FilePath -> String -> IO ()
+removeBranch bridgePath bName =
+  withBridgeLock bridgePath $ \fullBridgePath -> do
+    config <- getConfig fullBridgePath
+    let (branch, others) = partition ((== bName) . fst) $ branches config
+    if (length branch == 0)
+      then die $ "Branch " ++ bName ++ " is not tracked."
+      else do
+        let config' = config { branches = others }
+        writeFile "config" $ stringifyConfig config'
+        putStrLn $ "No longer tracking branch " ++ bName
+
+-- |withBridgeLock attempts to take the bridge lock and execute the given
+-- action, which takes the fullBridgePath as its argument.
+withBridgeLock :: FilePath -> (FilePath -> IO a) -> IO a
+withBridgeLock bridgePath action = do
+    fullBridgePath <- canonicalizePath bridgePath
+    setCurrentDirectory fullBridgePath
+    gotLock <- withLockCanFail "lock" $ action fullBridgePath
+    case gotLock of
+        Left _  -> putStrLn "Cannot take bridge lock!" >> exitFailure
+        Right a -> return a

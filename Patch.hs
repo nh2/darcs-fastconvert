@@ -1,6 +1,8 @@
 {-# LANGUAGE ScopedTypeVariables, FlexibleContexts #-}
 module Patch (readAndApplyGitEmail) where
 
+import Utils
+
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad ( unless, when )
 import Control.Monad.Trans ( liftIO )
@@ -132,8 +134,8 @@ applyChanges info changes repo = do
   testHunkHash fp expectedHash = do
     actualHash <- gitHashFile fp
     -- TODO: Warn and offer to apply anyway...
-    when (actualHash /= expectedHash) $ error . unwords $
-      ["FATAL: invalid hash of", fp, "expected:", show expectedHash
+    when (actualHash /= expectedHash) $ die . unwords $
+      ["invalid hash of", fp, "expected:", show expectedHash
       , "actual: ", show actualHash]
 
 -- |@gitHashFile@ calculates the Git hash of a given file's current state.

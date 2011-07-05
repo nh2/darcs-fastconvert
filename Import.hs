@@ -149,9 +149,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     let check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
         check NilFL [] = return ()
         check (p:>:ps) ((_,h):ms) = do
-          when (patchHash p /= h) $ die "FATAL: Marks do not correspond."
+          when (patchHash p /= h) $ die "Marks do not correspond."
           check ps ms
-        check _ _ = die "FATAL: Patch and mark count do not agree."
+        check _ _ = die "Patch and mark count do not agree."
 
         go :: State p -> B.ByteString -> TreeIO [BC.ByteString]
         go state rest = do objectStream <- liftIO $ parseObject inHandle rest
@@ -184,17 +184,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           modify $ \s -> s { tree = tree' }
           return branches
 
-        topLevelBranchDir :: ParsedBranchName -> FilePath
-        topLevelBranchDir (ParsedBranchName b) = concat
-          [repodir, "-", BC.unpack b]
-
         initBranch :: ParsedBranchName -> TreeIO ()
         initBranch b@(ParsedBranchName bName) = do
           liftIO $ doDebug $ "Setting up branch dir for: " ++ BC.unpack bName
           inventory <- readFile $ branchInventoryPath b
           pristine <- readFile $ branchPristinePath b
           liftIO $ withCurrentDirectory ".." $ do
-            let bDir = topLevelBranchDir b </> "_darcs"
+            let bDir = topLevelBranchDir repodir b </> "_darcs"
                 dirs = ["inventories", "patches", "pristine.hashed"]
             mapM_ (createDirectoryIfMissing True . (bDir </>)) dirs
             BL.writeFile (bDir </> "tentative_hashed_inventory") inventory
@@ -403,7 +399,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           checkForNewFile s path
 
         process (InCommit _ _ _ _ _ _) (Modify (ModifyHash hash) path) =
-          die $ unwords ["FATAL: Cannot currently handle Git hash:",
+          die $ unwords ["Cannot currently handle Git hash:",
              BC.unpack hash, "for file", BC.unpack path,
              "Do not use the --no-data option of git fast-export."]
 
@@ -424,14 +420,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- an addfile.
           diffCurrent s $ BC.unpack to
 
-        process (InCommit mark branch start ps endps info)
+        process (InCommit mark branch     start ps endps info)
           (Rename from to) = do
           liftIO $ doDebug $ unwords
-            ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
+            ["Handling rename from of:    ", BC.unpack from, "to", BC.unpack to]
           let uFrom = BC.unpack from
               uTo = BC.unpack to
-          targetDirExists <- liftIO $ treeHasDir start uTo
-          targetFileExists <- liftIO $ treeHasFile start uTo
+          targetDirExists <- liftIO $     treeHasDir start uTo
+          targetFileExists <- liftIO $     treeHasFile start uTo
           -- If the target exists, remove it; if it doesn't, add all its parent
           -- directories.
           preparePatchesRL <-
@@ -474,7 +470,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             Just n -> case getMark marks n of
               Nothing -> liftIO $ modifyIORef marksref $
                 \m -> addMark m n (patchHash $ n2pia patch)
-              Just n' -> die $ "FATAL: Mark already exists: " ++ BC.unpack n'
+              Just n' -> die $ "Mark already exists: " ++ BC.unpack n'
           stashInventoryAndPristine mark (Just branch)
 
         notdot ('.':_) = False
@@ -489,7 +485,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     pristines <- filter notdot `fmap` getDirectoryContents pristineDir
     forM_ branches $ \b ->
       withCurrentDirectory
-        (".." </> topLevelBranchDir (ParsedBranchName b)) $ do
+        (".." </> topLevelBranchDir repodir (ParsedBranchName b)) $ do
         doDebug $
           "Linking pristines and copying patches/inventories for branch: "
           ++ BC.unpack b

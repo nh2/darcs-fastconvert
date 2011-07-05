@@ -22,7 +22,6 @@ import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Prelude hiding ( readFile )
 import Printer ( renderString )
 import System.Directory ( canonicalizePath )
-import System.FilePath ( takeFileName )
 import System.Time ( toClockTime )
 
 import Darcs.Patch.Effect ( Effect )
@@ -36,7 +35,7 @@ import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch, showPatch )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..) )
-import Darcs.Patch.Set ( Origin, PatchSet(..), Tagged(..), newset2FL )
+import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
 import Darcs.Witnesses.Eq ( (=\/=), MyEq(..), isIsEq, unsafeCompare )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL )
 import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..), seal2, Sealed2(..)
@@ -207,9 +206,6 @@ dumpPatches printer tags mark from current (p:>:ps) bName bs = do
       fromMark = if nextMark == current then from else current
   dumpPatches printer tags mark fromMark nextMark ps bName bs'
 
-fp2bn :: FilePath -> String
-fp2bn = takeFileName
-
 fastExport :: (BLU.ByteString -> TreeIO ()) -> String -> [FilePath] -> Marks
   -> IO Marks
 fastExport printer repodir bs marks = do
@@ -233,7 +229,7 @@ fastExport' repo printer bs marks = do
       checkOne n p = do apply p
                         unless (inOrderTag tags p ||
                                 (getMark marks n == Just (patchHash p))) $
-                          die $ "FATAL: Marks do not correspond: expected " ++
+                          die $ "Marks do not correspond: expected " ++
                                 show (getMark marks n) ++ ", got "
                                 ++ BC.unpack (patchHash p)
 
@@ -244,13 +240,6 @@ fastExport' repo printer bs marks = do
         | n <= lastMark marks = checkOne n p >> check (next tags n p) ps
         | lastMark marks == 0 = return (1, flipSeal allps)
         | otherwise = return (n, flipSeal allps)
-
-      -- |equalHead checks that the first patch of two distinct FLs is equal,
-      -- giving a common branch-base that we can reset to in the output stream.
-      equalHead :: (RepoPatch p) => FL (PatchInfoAnd p) Origin cX
-        -> FL (PatchInfoAnd p) Origin cY -> Bool
-      equalHead (x :>: _) (y :>: _) = isIsEq $ x =\/= y
-      equalHead _     _ = False
 
       readBranchRepo :: FilePath
         -> IO (Branch p)
@@ -264,7 +253,8 @@ fastExport' repo printer bs marks = do
         return . Branch bName 1 $ seal2 bPatches
 
   them <- forM bs readBranchRepo
-
+  -- TODO: reintroduce checking, and ensure that branches (new/existing) are
+  -- correctly handled.
   ((n, FlippedSeal patches'), newTree) <-
     hashedTreeIO (check 1 patches) emptyTree "_darcs/pristine.hashed"
   hashedTreeIO (dumpPatches printer tags mark (n - 1) n patches' "master" $

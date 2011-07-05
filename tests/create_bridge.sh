@@ -28,8 +28,8 @@ function pathTest {
     echo "$gPath" | grep "$fullBridgePath/R_git"
 }
 
-darcs-fastconvert create-bridge --input-repo=R
+darcs-fastconvert create-bridge R
 pathTest "R_bridge"
 
-darcs-fastconvert create-bridge --input-repo=R --clone=no
+darcs-fastconvert create-bridge --clone=no R
 pathTest "."

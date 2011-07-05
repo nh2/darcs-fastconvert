@@ -2,7 +2,7 @@ module Stash ( restoreFromMark, restoreFromBranch, stashInventoryAndPristine
              , parseBranch, ParsedBranchName(..), updateHashes, stashPristine
              , filteredUpdateHashes, markpath, restorePristineFromMark
              , getTentativePristineContents, branchInventoryPath
-             , branchPristinePath ) where
+             , branchPristinePath, topLevelBranchDir ) where
 
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
@@ -36,6 +36,10 @@ parseBranch :: BC.ByteString -> ParsedBranchName
 parseBranch b = ParsedBranchName $ BC.concat
   [bType, BC.pack "-", BC.drop 2 bName] where
     (bType, bName) = BC.span (/= 's') . BC.drop 5 $ b
+
+topLevelBranchDir :: String -> ParsedBranchName -> FilePath
+topLevelBranchDir repodir (ParsedBranchName b) =
+  concat [repodir, "-", BC.unpack b]
 
 updateHashes :: TreeIO (Tree IO)
 updateHashes = filteredUpdateHashes Nothing
@@ -123,12 +127,20 @@ restoreInventoryFromMark pref m = restoreInventory pref $ markInventoryPath m
 
 restoreFromMark :: String -> Int -> TreeIO Int
 restoreFromMark pref m = do
+  -- TODO: If the restore point has already been exported, we won't have the
+  -- mark in our TreeMonad, so we will have to do a 'get --to-patch' matching
+  -- the patch corresponding to the mark as per the marks file. If we don't
+  -- have the mark in the marks file, then fail.
   restorePristineFromMark pref m
   restoreInventoryFromMark pref m
   return m
 
 restoreFromBranch :: String -> ParsedBranchName -> TreeIO Int
 restoreFromBranch pref b = do
+  -- TODO: if the branch we want to reset to has not been touched in the
+  -- current import stream then this will fail since we will be missing the
+  -- pristine/inventory files in the TreeMonad. We can instead just pull/get
+  -- from the branch directory itself. May need the config for that.
   restoreInventory pref $ branchInventoryPath b
   restorePristine pref $ branchPristinePath b
   branchMark <- TM.readFile $ branchMarkPath b
