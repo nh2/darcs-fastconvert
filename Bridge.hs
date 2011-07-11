@@ -24,7 +24,8 @@ import System.Directory ( createDirectory, canonicalizePath
                         , removeFile, renameFile, doesDirectoryExist )
 import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
-import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName )
+import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName
+                       , dropFileName )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
@@ -464,20 +465,21 @@ addBranch bridgePath (GitBranch bName) =
 addBranch bridgePath (DarcsBranch bPath) =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
-    withCurrentDirectory (darcs_path config) $
+    let mainDarcsPath = darcs_path config
+    fullBranchPath <- canonicalizePath bPath
+    withCurrentDirectory mainDarcsPath $
       withRepository [] $ RepoJob $ \repo -> do
-        bRepo <- identifyRepositoryFor repo bPath
+        bRepo <- identifyRepositoryFor repo fullBranchPath
         mainPatches <- newset2FL `fmap` readRepo repo
         branchPatches <- newset2FL `fmap` readRepo bRepo
         -- We'd rather fail now, than on the next export.
         unless (equalHead mainPatches branchPatches) $
           die "Cannot add branch that doesn't share patch #1 with master."
         let bName = fp2bn bPath
-        clonePath <- canonicalizePath $ ".." </> bName
-        fullBranchPath <- canonicalizePath bPath
+            clonePath = dropFileName mainDarcsPath </> bName
         repoLocation <-
           if cloned config
-            then cloneRepo Darcs bPath clonePath >> return clonePath
+            then cloneRepo Darcs fullBranchPath clonePath >> return clonePath
             else return fullBranchPath
         addBranchToConfig fullBridgePath config (bName, repoLocation)
         syncBridge' True fullBridgePath Git
