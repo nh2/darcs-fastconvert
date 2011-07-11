@@ -54,7 +54,7 @@ from :2
 M 100644 :1 e
 
 reset refs/heads/master
-from :4
+from :6
 
 EOF
 

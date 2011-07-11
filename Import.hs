@@ -355,6 +355,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         process (Toplevel n currentBranch) (Reset branch from) = do
              switchBranch n currentBranch from
+             -- Create/recreate the branch by copying the inventory/pristine.
+             stashInventoryAndPristine Nothing (Just branch)
              return $ Toplevel n branch
 
         process (Toplevel n b) (Blob (Just m) bits) = do
