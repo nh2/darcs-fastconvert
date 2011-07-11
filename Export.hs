@@ -183,9 +183,8 @@ exportBranches :: (RepoPatch p) => (BLU.ByteString -> TreeIO ()) -> [PatchInfo]
   -> [(Bool, Branch p)] -> TreeIO ()
 exportBranches _ _ _ _ _ [] = return ()
 exportBranches printer tags mark from current ((_, Branch name m ps) : bs) = do
-    if from /= m
-      then restorePristineFromMark "exportTemp" m >> reset printer (Just m) name
-      else reset printer Nothing name
+    when (from /= m) $ restorePristineFromMark "exportTemp" m
+    reset printer (Just m) name
     dumpPatches printer tags mark m current (unsafeUnseal2 ps) name $
       -- Reset fork markers, so we can find branch common prefixes.
       map (\(_, b) -> (False, b)) bs
