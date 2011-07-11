@@ -334,6 +334,10 @@ syncBridge' firstSync fullBridgePath repoType = do
     diffExportMarks' []     = id
     diffExportMarks' (x:_) = takeWhile (/= x)
 
+putConfig :: FilePath -> BridgeConfig -> IO ()
+putConfig fullBridgePath config = withCurrentDirectory fullBridgePath $
+  writeFile "config" $ stringifyConfig config
+
 getConfig :: FilePath -> IO BridgeConfig
 getConfig fullBridgePath = do
   errConfig <- runErrorT $ readConfig fullBridgePath
@@ -482,8 +486,7 @@ addBranchToConfig fullBridgePath config branch = do
   when (branch `elem` branches config) $
     die $ "Branch " ++ fst branch ++ " is already managed by the bridge!"
   let newBranches = branch : branches config
-  writeFile (fullBridgePath </> "config") $ stringifyConfig $
-    config { branches = newBranches }
+  putConfig fullBridgePath $ config { branches = newBranches }
 
 removeBranch :: FilePath -> String -> IO ()
 removeBranch bridgePath bName =
@@ -493,8 +496,7 @@ removeBranch bridgePath bName =
     if (length branch == 0)
       then die $ "Branch " ++ bName ++ " is not tracked."
       else do
-        let config' = config { branches = others }
-        writeFile "config" $ stringifyConfig config'
+        putConfig fullBridgePath $ config { branches = others }
         putStrLn $ "No longer tracking branch " ++ bName
 
 -- |withBridgeLock attempts to take the bridge lock and execute the given
