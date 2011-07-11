@@ -504,8 +504,9 @@ removeBranch bridgePath bName =
 withBridgeLock :: FilePath -> (FilePath -> IO a) -> IO a
 withBridgeLock bridgePath action = do
     fullBridgePath <- canonicalizePath bridgePath
-    setCurrentDirectory fullBridgePath
-    gotLock <- withLockCanFail "lock" $ action fullBridgePath
+    let lockPath = fullBridgePath </> "lock"
+    gotLock <- withLockCanFail lockPath $ action fullBridgePath
     case gotLock of
-        Left _  -> putStrLn "Cannot take bridge lock!" >> exitFailure
+        Left _  -> do putStrLn $ "Cannot take bridge lock:" ++ lockPath
+                      exitFailure
         Right a -> return a
