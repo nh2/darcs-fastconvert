@@ -401,7 +401,10 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         withFile target WriteMode (\output ->
            runProcess "git"
                 (["fast-export", "--export-marks="++marksPath,
-                 "--import-marks="++marksPath, "-M", "-C"] ++ branchList)
+                 "--import-marks="++marksPath, "-M", "-C"] ++ branchList
+                 -- We append "--" to signify that we mean revisions rather
+                 -- than files (e.g. a file of the same name as a branch)
+                 ++ ["--"])
                 (Just gitPath) Nothing Nothing (Just output) Nothing)
 
     rawGitImport source = do
