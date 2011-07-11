@@ -386,7 +386,7 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
 
     darcsExport target = darcsFCCmd target WriteMode darcsExportMarksName $
         \output -> fastExport (printer output) darcsPath
-          (map snd $ branches config)
+          (map snd $ filter ((/= "master") . fst) $ branches config)
       where
         printer h s = liftIO $ BL.hPut h s >> BL.hPut h (BL.singleton '\n')
 
