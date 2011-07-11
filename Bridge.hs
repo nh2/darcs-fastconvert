@@ -491,6 +491,7 @@ addBranchToConfig fullBridgePath config branch = do
   putConfig fullBridgePath $ config { branches = newBranches }
 
 removeBranch :: FilePath -> String -> IO ()
+removeBranch _ "master" = die "Cannot remove master branch."
 removeBranch bridgePath bName =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
