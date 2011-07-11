@@ -134,12 +134,12 @@ generateInfoIgnores p =
 dumpPatch :: (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y
   -> Int -> Int -> String -> TreeIO ()
-dumpPatch printer mark p from current bName =
+dumpPatch printer doMark p from current bName =
   do dumpBits printer [ BLC.pack $ "progress " ++ show current ++ ": "
                           ++ patchName p
                       , BLC.pack $ "commit refs/heads/" ++ bName ]
      let message = patchMessage p `BL.append` generateInfoIgnores p
-     mark p current
+     doMark p current
      dumpBits printer
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
         , BLU.fromString $ "data " ++ show (BL.length message + 1)
@@ -182,11 +182,11 @@ exportBranches :: (RepoPatch p) => (BLU.ByteString -> TreeIO ()) -> [PatchInfo]
   -> Marks -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ()) -> Int
   -> Int -> [(Bool, Branch p)] -> TreeIO ()
 exportBranches _ _ _ _ _ _ [] = return ()
-exportBranches printer tags existingMarks mark from current
+exportBranches printer tags existingMarks doMark from current
   ((_, Branch name m ps) : bs) = do
     when (from /= m) $ restorePristineFromMark "exportTemp" m
     reset printer (Just m) name
-    dumpPatches printer tags existingMarks mark m current (unsafeUnseal2 ps)
+    dumpPatches printer tags existingMarks doMark m current (unsafeUnseal2 ps)
       name $
       -- Reset fork markers, so we can find branch common prefixes.
       map (\(_, b) -> (False, b)) bs
@@ -195,9 +195,9 @@ dumpPatches :: forall p x y . (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> [PatchInfo] -> Marks -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
   -> Int -> Int -> FL (PatchInfoAnd p) x y -> String -> [(Bool, Branch p)]
   -> TreeIO ()
-dumpPatches printer tags existingMarks mark from current NilFL _ bs =
-  exportBranches printer tags existingMarks mark from current bs
-dumpPatches printer tags existingMarks mark from current (p:>:ps) bName bs =
+dumpPatches printer tags existingMarks doMark from current NilFL _ bs =
+  exportBranches printer tags existingMarks doMark from current bs
+dumpPatches printer tags existingMarks doMark from current (p:>:ps) bName bs =
   do
   bs' <- updateBranches current p bs
   apply p
@@ -206,7 +206,7 @@ dumpPatches printer tags existingMarks mark from current (p:>:ps) bName bs =
   if (current > lastMark existingMarks)
     then if (inOrderTag tags p)
            then dumpTag printer p from
-           else dumpPatch printer mark p from current bName
+           else dumpPatch printer doMark p from current bName
     else unless (inOrderTag tags p ||
           (getMark existingMarks current == Just (patchHash p))) $
            die . unwords $ ["Marks do not correspond: expected"
@@ -214,7 +214,7 @@ dumpPatches printer tags existingMarks mark from current (p:>:ps) bName bs =
                            , BC.unpack (patchHash p)]
   let nextMark = next tags current p
       fromMark = if nextMark == current then from else current
-  dumpPatches printer tags existingMarks mark fromMark nextMark ps bName bs'
+  dumpPatches printer tags existingMarks doMark fromMark nextMark ps bName bs'
 
 fastExport :: (BLU.ByteString -> TreeIO ()) -> String -> [FilePath] -> Marks
   -> IO Marks
@@ -230,10 +230,10 @@ fastExport' repo printer bs marks = do
   marksref <- newIORef marks
   let patches = newset2FL patchset
       tags = optimizedTags patchset
-      mark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
-      mark p n = do printer $ BLU.fromString $ "mark :" ++ show n
-                    liftIO $ modifyIORef marksref $
-                      \m -> addMark m n (patchHash p)
+      doMark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
+      doMark p n = do printer $ BLU.fromString $ "mark :" ++ show n
+                      liftIO $ modifyIORef marksref $
+                        \m -> addMark m n (patchHash p)
 
       readBranchRepo :: FilePath
         -> IO (Branch p)
@@ -247,7 +247,7 @@ fastExport' repo printer bs marks = do
         return . Branch bName 1 $ seal2 bPatches
 
   them <- forM bs readBranchRepo
-  hashedTreeIO (dumpPatches printer tags marks mark 0 1 patches "master" $
+  hashedTreeIO (dumpPatches printer tags marks doMark 0 1 patches "master" $
     map (\ps -> (False, ps)) them) emptyTree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do
