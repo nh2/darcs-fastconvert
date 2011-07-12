@@ -422,14 +422,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- an addfile.
           diffCurrent s $ BC.unpack to
 
-        process (InCommit mark branch     start ps endps info)
+        process (InCommit mark branch start ps endps info)
           (Rename from to) = do
           liftIO $ doDebug $ unwords
-            ["Handling rename from of:    ", BC.unpack from, "to", BC.unpack to]
+            ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
           let uFrom = BC.unpack from
               uTo = BC.unpack to
-          targetDirExists <- liftIO $     treeHasDir start uTo
-          targetFileExists <- liftIO $     treeHasFile start uTo
+          targetDirExists <- liftIO $ treeHasDir start uTo
+          targetFileExists <- liftIO $ treeHasFile start uTo
           -- If the target exists, remove it; if it doesn't, add all its parent
           -- directories.
           preparePatchesRL <-
