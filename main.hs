@@ -132,7 +132,7 @@ handleListBranches c = do
 handleAddBranch :: BranchCmd -> IO ()
 handleAddBranch c = case branchType c of
   Darcs -> addBranch (bPath c) $ DarcsBranch (branch c)
-  Git -> addBranch (bPath c) $ GitBranch (branch c)
+  _ -> addBranch (bPath c) $ GitBranch (branch c)
 
 handleRemoveBranch  :: BranchCmd -> IO ()
 handleRemoveBranch c = removeBranch (bPath c) (branch c)

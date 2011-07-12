@@ -37,7 +37,7 @@ import qualified Darcs.Commands.Get as DCG
 import Darcs.Flags ( DarcsFlag(WorkRepoDir, UseFormat2, Quiet) )
 import Darcs.Lock ( withLockCanFail )
 import Darcs.Patch.Set ( newset2FL )
-import Darcs.Repository ( Repository, RepoJob(..), readRepo, withRepository
+import Darcs.Repository ( RepoJob(..), readRepo, withRepository
                         , amNotInRepository, createRepository )
 import Darcs.Repository.Internal ( identifyRepositoryFor )
 import Darcs.Repository.Prefs ( addToPreflist )
@@ -207,18 +207,21 @@ cloneRepo _ old new = do
     cloneEC <- waitForProcess cloneProcHandle
     when (cloneEC /= ExitSuccess) (die "Git clone failed!")
 
+nonMasterBranches :: BridgeConfig -> [(String, FilePath)]
+nonMasterBranches = filter ((/= "master") . fst) . branches
+
 stringifyConfig :: BridgeConfig -> String
-stringifyConfig conf = to_string $ forceEither $ do
-    cp <- set emptyCP "DEFAULT" "darcs_path" (darcs_path conf)
-    cp <- set cp "DEFAULT" "git_path" (git_path conf)
-    cp <- setshow cp "DEFAULT" "cloned" (cloned conf)
-    let bs = filter ((/= "master") . fst) $ branches conf
-    foldM (\cp (bName, bDarcsPath) -> do
-      let sectionName = "branch/" ++ bName
-          isNewBranch = not $ has_section cp sectionName
-      cp <- if isNewBranch then add_section cp sectionName else return cp
-      cp <- set cp sectionName "name" bName
-      set cp sectionName "darcs_path" bDarcsPath) cp bs
+stringifyConfig conf = to_string $ forceEither $
+  set emptyCP "DEFAULT" "darcs_path" (darcs_path conf)
+  >>= (\cp -> set cp "DEFAULT" "git_path" (git_path conf))
+  >>= (\cp -> setshow cp "DEFAULT" "cloned" (cloned conf))
+  >>= (\cp -> foldM (\cp' (bName, bDarcsPath) ->
+    let sectionName = "branch/" ++ bName
+        isNewBranch = not $ has_section cp' sectionName in
+    (if isNewBranch then add_section cp' sectionName else return cp')
+    >>= (\cp'' -> set cp'' sectionName "name" bName)
+    >>= (\cp'' -> set cp'' sectionName "darcs_path" bDarcsPath))
+    cp $ nonMasterBranches conf)
 
 initTargetRepo :: FilePath -> VCSType -> IO FilePath
 initTargetRepo fullRepoPath repoType = do
@@ -358,8 +361,8 @@ getConfig fullBridgePath = do
            path <- get configFile section "darcs_path"
            return (name, path)
           masterBranch = ("master", darcsPath)
-      branches <- (masterBranch :) `fmap` forM bSections readBranchSection
-      return $ BridgeConfig darcsPath gitPath wasCloned branches
+      bs <- (masterBranch :) `fmap` forM bSections readBranchSection
+      return $ BridgeConfig darcsPath gitPath wasCloned bs
 
 -- createConverter creates a converter that will pull changes into the repo of
 -- type targetRepoType
@@ -386,10 +389,10 @@ createConverter targetRepoType config fullBridgePath = case targetRepoType of
         \input -> fastImportIncremental True input putStrLn darcsPath
 
     darcsExport target = darcsFCCmd target WriteMode darcsExportMarksName $
-        \output -> fastExport (printer output) darcsPath
-          (map snd $ filter ((/= "master") . fst) $ branches config)
+        \output -> fastExport (printer output) darcsPath branchNames
       where
         printer h s = liftIO $ BL.hPut h s >> BL.hPut h (BL.singleton '\n')
+        branchNames = map snd $ nonMasterBranches config
 
     waitForGit :: IO ProcessHandle -> IO ()
     waitForGit cmd = do exporterProcHandle <- cmd
@@ -484,6 +487,7 @@ addBranch bridgePath (DarcsBranch bPath) =
         addBranchToConfig fullBridgePath config (bName, repoLocation)
         syncBridge' True fullBridgePath Git
 
+addBranchToConfig :: FilePath -> BridgeConfig -> (String, FilePath) -> IO ()
 addBranchToConfig fullBridgePath config branch = do
   when (branch `elem` branches config) $
     die $ "Branch " ++ fst branch ++ " is already managed by the bridge!"
@@ -496,7 +500,7 @@ removeBranch bridgePath bName =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
     let (branch, others) = partition ((== bName) . fst) $ branches config
-    if (length branch == 0)
+    if null branch
       then die $ "Branch " ++ bName ++ " is not tracked."
       else do
         putConfig fullBridgePath $ config { branches = others }

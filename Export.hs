@@ -36,10 +36,9 @@ import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch, showPatch )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate )
 import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..) )
 import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
-import Darcs.Witnesses.Eq ( (=\/=), MyEq(..), isIsEq, unsafeCompare )
+import Darcs.Witnesses.Eq ( MyEq(..), unsafeCompare )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL )
-import Darcs.Witnesses.Sealed ( flipSeal, FlippedSeal(..), seal2, Sealed2(..)
-                              , unsafeUnseal2 )
+import Darcs.Witnesses.Sealed ( seal2, Sealed2(..), unsafeUnseal2 )
 import Darcs.Utils ( withCurrentDirectory )
 
 import Storage.Hashed.Darcs
@@ -203,8 +202,8 @@ dumpPatches printer tags existingMarks doMark from current (p:>:ps) bName bs =
   apply p
   -- Only export if we haven't already done so, otherwise checking that the
   -- incremental marks provided are correct for the repos being exported.
-  if (current > lastMark existingMarks)
-    then if (inOrderTag tags p)
+  if current > lastMark existingMarks
+    then if inOrderTag tags p
            then dumpTag printer p from
            else dumpPatch printer doMark p from current bName
     else unless (inOrderTag tags p ||
