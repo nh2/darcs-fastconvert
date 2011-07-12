@@ -143,6 +143,8 @@ fastImport' :: forall p r u . (RepoPatch p) => Bool -> FilePath -> Handle ->
     (String -> IO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
 fastImport' debug repodir inHandle printer repo marks initial = do
     let doDebug x = when debug $ printer $ "Import debug: " ++ x
+        doTreeIODebug :: String -> TreeIO ()
+        doTreeIODebug x = liftIO $ doDebug x
     initPristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     marksref <- newIORef marks
@@ -163,7 +165,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         handleEndOfStream :: State p -> TreeIO [BC.ByteString]
         handleEndOfStream state = do
-          liftIO $ doDebug "Handling end-of-stream"
+          doTreeIODebug "Handling end-of-stream"
           -- We won't necessarily be InCommit at the EOS.
           case state of
             s@(InCommit _ _ _ _ _ _) -> finalizeCommit s
@@ -177,7 +179,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 branchTree
               branches = filter (/= BC.pack "head-master") entries
           mapM_ (initBranch . ParsedBranchName) branches
-          liftIO $ doDebug "Writing tentative pristine."
+          doTreeIODebug "Writing tentative pristine."
           (pristine, tree') <- getTentativePristineContents
           liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
           -- dump the right tree, without _darcs
@@ -186,7 +188,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         initBranch :: ParsedBranchName -> TreeIO ()
         initBranch b@(ParsedBranchName bName) = do
-          liftIO $ doDebug $ "Setting up branch dir for: " ++ BC.unpack bName
+          doTreeIODebug $ "Setting up branch dir for: " ++ BC.unpack bName
           inventory <- readFile $ branchInventoryPath b
           pristine <- readFile $ branchPristinePath b
           liftIO $ withCurrentDirectory ".." $ do
@@ -247,7 +249,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           let affectingPrims :: [Sealed2 (PrimOf p)]
               affectingPrims = primsAffectingFile fn endps
               invertedPrims = map (invert.unsafeUnseal2) affectingPrims
-          liftIO $ doDebug $ (show.length $ affectingPrims) ++ " affecting prims."
+          doTreeIODebug $ (show.length $ affectingPrims) ++ " affecting prims."
           current <- treeProvider
           liftIO $ foldM (flip applyToTree) current invertedPrims
 
@@ -369,11 +371,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         process (Toplevel previous pbranch)
           (Commit branch mark author message from merges) = do
-          liftIO $ doDebug $ "Handling commit beginning: " ++
+          doTreeIODebug $ "Handling commit beginning: " ++
             BC.unpack (BC.take 20 message)
           fromMark <- if pbranch /= branch
             then do
-              liftIO $ doDebug $ unwords
+              doTreeIODebug $ unwords
                 ["Switching branch from", show pbranch, "to", show branch]
               Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
@@ -383,7 +385,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           let preCount = lengthRL prePatches
               postCount = lengthRL postPatches
           when (preCount > 0 || postCount > 0) $
-            liftIO $ doDebug $ unwords ["Commit contains", show preCount
+            doTreeIODebug $ unwords ["Commit contains", show preCount
               , "start darcs-patches and", show postCount, "end darcs-patches."]
           apply prePatches
           startstate <- updateHashes
@@ -391,12 +393,12 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch startstate prePatches postPatches info
 
         process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
-          liftIO $ doDebug $ "Handling modify of: " ++ BC.unpack path
+          doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           checkForNewFile s path
 
         process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
-          liftIO $ doDebug $ "Handling modify of: " ++ BC.unpack path
+          doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           checkForNewFile s path
 
@@ -406,7 +408,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
              "Do not use the --no-data option of git fast-export."]
 
         process (InCommit mark branch _ ps endps info) (Delete path) = do
-          liftIO $ doDebug $ "Handling delete of: " ++ BC.unpack path
+          doTreeIODebug $ "Handling delete of: " ++ BC.unpack path
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
@@ -414,7 +416,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           return $ InCommit mark branch current (rmPatch :<: ps) endps info
 
         process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
-          liftIO $ doDebug $ unwords
+          doTreeIODebug $ unwords
             ["Handling copy from of:", BC.unpack from, "to", BC.unpack to]
           let unpackFloat = floatPath.BC.unpack
           TM.copy (unpackFloat from) (unpackFloat to)
@@ -424,7 +426,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         process (InCommit mark branch start ps endps info)
           (Rename from to) = do
-          liftIO $ doDebug $ unwords
+          doTreeIODebug $ unwords
             ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
           let uFrom = BC.unpack from
               uTo = BC.unpack to
@@ -461,7 +463,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         finalizeCommit (Toplevel _ _) =
           error "Cannot finalize commit at toplevel."
         finalizeCommit (InCommit mark branch _ ps endps info) = do
-          liftIO $ doDebug "Finalising commit."
+          doTreeIODebug "Finalising commit."
           (prims :: FL p cX cY)  <- return $ fromPrims $
             sortCoalesceFL . reverseRL $ endps +<+ unsafeCoercePEnd ps
           let patch = infopatch info prims
