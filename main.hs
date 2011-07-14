@@ -25,7 +25,9 @@ data Cmd = Import { debug :: Bool
                         , clone :: Bool}
          | Sync   { bridgePath :: String
                   , repoType :: VCSType }
-         | ApplyPatch { repo :: String }
+         | ApplyPatch { repo :: String
+                      , prompt :: Bool
+                      , patchFile :: FilePath }
          | Branch {}
          deriving (Eq, Typeable, Data)
 
@@ -40,7 +42,8 @@ data BranchCmd = List { bPath :: String }
 instance Attributes Cmd where
   attributes _ =
     repo %> [ Positional 0 ] %%
-    inputRepo %> [Positional 0 ] %% group "Options"
+    patchFile %> [ Positional 1 ] %%
+    inputRepo %> [ Positional 0 ] %% group "Options"
     [ format     %> [ Help
       "repository type to create: darcs-2 (default) or hashed"
                     , Default Darcs2Format ]
@@ -58,6 +61,8 @@ instance Attributes Cmd where
                     , Default True]
     , debug      %> [ Help "output extra activity information"
                     , Default False ]
+    , prompt     %> [ Help "prompt user if file hash does not match patch hash"
+                    , Default True ]
     , branches   %> [ Help "branches to be exported"
                     , Extra True ] ]
 
@@ -163,7 +168,7 @@ handleSync c = case bridgePath c of
   b  -> syncBridge False b (repoType c)
 
 handleApplyPatch :: Cmd -> IO ()
-handleApplyPatch c = readAndApplyGitEmail (repo c)
+handleApplyPatch c = readAndApplyGitEmail (repo c) (prompt c) (patchFile c)
 
 main :: IO ()
 main = getArgs >>= dispatch [] (recordCommands (undefined :: Cmd))

@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, FlexibleContexts #-}
+{-# LANGUAGE GADTs, ScopedTypeVariables, FlexibleContexts #-}
 module Patch (readAndApplyGitEmail) where
 
 import Utils
@@ -17,12 +17,12 @@ import Data.List ( inits )
 import Data.Maybe ( fromJust )
 import Prelude hiding ( lex )
 import System.Directory ( doesFileExist, doesDirectoryExist )
-import System.IO ( stdin )
+import System.IO ( openFile, IOMode( ReadMode ), Handle )
 import System.FilePath ( splitPath, joinPath, takeDirectory, isPathSeparator )
 import SHA1 ( sha1PS )
 
 import Darcs.Flags( Compression(..) )
-import Darcs.Patch ( RepoPatch, fromPrims, infopatch, apply )
+import Darcs.Patch ( RepoPatch, fromPrims, infopatch, apply, invert )
 import Darcs.Patch.Info ( patchinfo, PatchInfo )
 import Darcs.Patch.PatchInfoAnd ( n2pia )
 import Darcs.Patch.Prim ( sortCoalesceFL, hunk, addfile, rmfile, adddir )
@@ -31,9 +31,10 @@ import Darcs.Repository ( withRepoLock, RepoJob(..), Repository
                         , finalizeRepositoryChanges, tentativelyAddPatch )
 import Darcs.SignalHandler ( withSignalsBlocked )
 import Darcs.Utils ( withCurrentDirectory )
-import Darcs.Witnesses.Ordered ( FL(..), (+>+) )
+import Darcs.Witnesses.Ordered ( FL(..), (+>+), RL(..) )
 import Darcs.Witnesses.Sealed ( Sealed(..), joinGap, emptyGap, freeGap
                               , unFreeLeft, FreeLeft )
+import Darcs.Utils ( promptYorn )
 
 type Author = B.ByteString
 type Message = [B.ByteString]
@@ -72,33 +73,48 @@ data HunkLine = ContextLine B.ByteString
               | RemovedLine B.ByteString
   deriving Show
 
-readAndApplyGitEmail :: String -> IO ()
-readAndApplyGitEmail repoPath = withCurrentDirectory repoPath $ do
-  putStrLn "Attempting to parse input."
-  ps <- parseGitEmail
-  putStrLn $ "Successfully parsed " ++ (show . length $ ps) ++ " patches."
-  putStrLn "Attempting to apply patches."
-  mapM_ applyGitPatch ps
-  putStrLn "Succesfully applied patches."
+readAndApplyGitEmail :: String -> Bool -> FilePath -> IO ()
+readAndApplyGitEmail repoPath shouldPrompt patchFile =
+  withCurrentDirectory repoPath $ do
+    exists <- doesFileExist patchFile
+    unless exists $ die $ patchFile ++ " does not exist, or is inaccessible."
+    putStrLn "Attempting to parse input."
+    h <- openFile patchFile ReadMode
+    ps <- parseGitEmail h
+    putStrLn $ "Successfully parsed " ++ (show . length $ ps) ++ " patches."
+    putStrLn "Attempting to apply patches."
+    mapM_ (applyGitPatch shouldPrompt) ps
+    putStrLn "Succesfully applied patches."
 
-applyGitPatch :: GitPatch -> IO ()
-applyGitPatch (GitPatch author date message changes) = do
+applyGitPatch :: Bool -> GitPatch -> IO ()
+applyGitPatch shouldPrompt (GitPatch author date message changes) = do
   let (name:descr) = map BC.unpack message
       dateStr = formatDateTime "%Y%m%d%H%M%S" date
   info <- patchinfo dateStr name (BC.unpack author) descr
-  withRepoLock [] $ RepoJob $ applyChanges info changes
+  withRepoLock [] $ RepoJob $ applyChanges shouldPrompt info changes
 
-applyChanges :: forall p r u . (RepoPatch p) => PatchInfo -> [Change]
+applyChanges :: forall p r u . (RepoPatch p) => Bool -> PatchInfo -> [Change]
   -> Repository p r u r -> IO ()
-applyChanges info changes repo = do
+applyChanges shouldPrompt info changes repo = do
   (Sealed ps) <- unFreeLeft `fmap` changesToPrims changes
   (prims :: FL p r x) <- return . fromPrims . sortCoalesceFL $ ps
   let patch = infopatch info prims
   _ <- tentativelyAddPatch repo GzipCompression (n2pia patch)
   withSignalsBlocked $ do
+    applyAllOrNone ps
     finalizeRepositoryChanges repo
-    apply ps
   where
+  applyAllOrNone :: FL (PrimOf p) r x -> IO ()
+  applyAllOrNone = applyAllOrNone' NilRL where
+    applyAllOrNone' :: RL (PrimOf p) r y -> FL (PrimOf p) y x -> IO ()
+    applyAllOrNone' _ NilFL = return ()
+    applyAllOrNone' applied (p :>: ps) = do
+      apply p `catch` \_ -> do
+        putStrLn "A prim failed to apply, rolling back changes made."
+        apply $ invert applied
+        die $ "A prim could not be applied, no changes have been made."
+      applyAllOrNone' (p :<: applied) ps
+
   changesToPrims :: [Change] -> IO (FreeLeft (FL (PrimOf p)))
   changesToPrims [] = return $ emptyGap NilFL
   changesToPrims (c:cs) = do
@@ -133,10 +149,14 @@ applyChanges info changes repo = do
 
   testHunkHash fp expectedHash = do
     actualHash <- gitHashFile fp
-    -- TODO: Warn and offer to apply anyway...
-    when (actualHash /= expectedHash) $ die . unwords $
-      ["invalid hash of", fp, "expected:", show expectedHash
-      , "actual: ", show actualHash]
+    when (actualHash /= expectedHash) $ do
+      continue <- if shouldPrompt
+        then promptYorn $
+          "Hash of " ++ fp ++ " does not match patch, continue anyway?"
+        else return False
+      unless continue $ die . unwords $
+          ["invalid hash of file", fp, "\nexpected:", show expectedHash
+          , "\nactual:  ", show actualHash]
 
 -- |@gitHashFile@ calculates the Git hash of a given file's current state.
 gitHashFile :: FilePath -> IO GitHash
@@ -155,8 +175,8 @@ missingFileHash, emptyFileHash :: GitHash
 missingFileHash = GitHash $ replicate 40 '0'
 emptyFileHash = GitHash "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
-parseGitEmail :: IO [GitPatch]
-parseGitEmail = go (A.parse $ many p_gitPatch) BC.empty where
+parseGitEmail :: Handle -> IO [GitPatch]
+parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
   lex :: A.Parser b -> A.Parser b
   lex p = p >>= \x -> A.skipSpace >> return x
 
@@ -335,15 +355,16 @@ parseGitEmail = go (A.parse $ many p_gitPatch) BC.empty where
 
   p_mode = lex $ A.takeWhile (A.inClass "0-9")
 
-  go :: (B.ByteString -> A.Result [GitPatch]) -> B.ByteString -> IO [GitPatch]
-  go parser rest = do
-    chunk <- if B.null rest then liftIO $ B.hGet stdin (64 * 1024)
+  go :: (B.ByteString -> A.Result [GitPatch]) -> B.ByteString -> Handle
+    -> IO [GitPatch]
+  go parser rest handle = do
+    chunk <- if B.null rest then liftIO $ B.hGet handle (64 * 1024)
                             else return rest
-    go_chunk parser chunk
-  go_chunk parser chunk =
+    go_chunk parser chunk handle
+  go_chunk parser chunk handle =
     case parser chunk of
       A.Done _ result -> return result
-      A.Partial cont -> go cont B.empty
+      A.Partial cont -> go cont B.empty handle
       A.Fail _ ctx err -> do
         let ch = "\n=== chunk ===\n" ++ BC.unpack chunk ++
               "\n=== end chunk ===="
