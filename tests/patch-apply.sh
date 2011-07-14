@@ -34,7 +34,8 @@ git commit -m 'Change a, add b, remove c, and add "bar baz"'
 # Clean up, so Darcs doesn't complain when we import the patch.
 rm -rf a b c foo
 
-git format-patch --stdout --all | darcs-fastconvert apply-patch .
+git format-patch --stdout --all > patch
+darcs-fastconvert apply-patch . patch
 
 [[ $(darcs cha --count) -eq 2 && -e a && $(wc -l a | awk '{print $1}') -eq 23
    && (! -e c) && -e b && -e foo && -e 'foo/bar baz' ]]
