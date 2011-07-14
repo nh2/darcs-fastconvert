@@ -44,8 +44,9 @@ pb2bn (ParsedBranchName name) = name
 
 
 topLevelBranchDir :: String -> ParsedBranchName -> FilePath
-topLevelBranchDir repodir (ParsedBranchName b) =
-  concat [repodir, "-", BC.unpack b]
+topLevelBranchDir repodir (ParsedBranchName b) = case BC.unpack b of
+  "head-master" -> repodir
+  branchName -> concat [repodir, "-", branchName]
 
 updateHashes :: TreeIO (Tree IO)
 updateHashes = filteredUpdateHashes Nothing
@@ -108,6 +109,11 @@ stashPristine mbMark mbBranch = do
   (pristine, tree') <- getTentativePristineContents
   -- Manually dump the tree.
   liftIO $ writeDarcsHashed tree' "_darcs/pristine.hashed"
+  stashPristineBS mbMark mbBranch pristine
+
+stashPristineBS :: Maybe Int -> Maybe ParsedBranchName -> BL.ByteString
+  -> TreeIO ()
+stashPristineBS mbMark mbBranch pristine = do
   flip maybeReturn mbMark $ \mark -> do
     TM.writeFile (markPristinePath mark) pristine
     maybeReturn (\b -> TM.writeFile (branchMarkPath b) $ BL.pack $ show mark)
@@ -117,6 +123,11 @@ stashPristine mbMark mbBranch = do
 stashInventory :: Maybe Int -> Maybe ParsedBranchName -> TreeIO ()
 stashInventory mbMark mbBranch = do
   inventory <- liftIO $ BL.readFile "_darcs/tentative_hashed_inventory"
+  stashInventoryBS mbMark mbBranch inventory
+
+stashInventoryBS :: Maybe Int -> Maybe ParsedBranchName -> BL.ByteString
+  -> TreeIO ()
+stashInventoryBS mbMark mbBranch inventory = do
   maybeReturn (\m -> TM.writeFile (markInventoryPath m) inventory) mbMark
   maybeReturn (\b -> TM.writeFile (branchInventoryPath b) inventory) mbBranch
 
@@ -140,6 +151,18 @@ restoreFromMark pref m = do
   restorePristineFromMark pref m
   restoreInventoryFromMark pref m
   return m
+
+canRestoreFromMark :: Int -> TreeIO Bool
+canRestoreFromMark m = do
+  prisExists <- TM.fileExists $ markPristinePath m
+  invExists <- TM.fileExists $ markInventoryPath m
+  return $ prisExists && invExists
+
+canRestoreFromBranch :: ParsedBranchName -> TreeIO Bool
+canRestoreFromBranch b = do
+  prisExists <- TM.fileExists $ branchPristinePath b
+  invExists <- TM.fileExists $ branchInventoryPath b
+  return $ prisExists && invExists
 
 restoreFromBranch :: String -> ParsedBranchName -> TreeIO Int
 restoreFromBranch pref b = do
