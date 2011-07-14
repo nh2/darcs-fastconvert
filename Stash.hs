@@ -2,7 +2,9 @@ module Stash ( restoreFromMark, restoreFromBranch, stashInventoryAndPristine
              , parseBranch, ParsedBranchName(..), updateHashes, stashPristine
              , filteredUpdateHashes, markpath, restorePristineFromMark
              , getTentativePristineContents, branchInventoryPath
-             , branchPristinePath, topLevelBranchDir ) where
+             , branchPristinePath, topLevelBranchDir, canRestoreFromMark
+             , canRestoreFromBranch, stashPristineBS, stashInventoryBS
+             , pb2bn ) where
 
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
@@ -36,6 +38,10 @@ parseBranch :: BC.ByteString -> ParsedBranchName
 parseBranch b = ParsedBranchName $ BC.concat
   [bType, BC.pack "-", BC.drop 2 bName] where
     (bType, bName) = BC.span (/= 's') . BC.drop 5 $ b
+
+pb2bn :: ParsedBranchName -> B.ByteString
+pb2bn (ParsedBranchName name) = name
+
 
 topLevelBranchDir :: String -> ParsedBranchName -> FilePath
 topLevelBranchDir repodir (ParsedBranchName b) =

@@ -473,8 +473,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             Nothing -> return ()
             Just n -> case getMark marks n of
               Nothing -> liftIO $ modifyIORef marksref $
-                \m -> addMark m n (patchHash $ n2pia patch)
-              Just n' -> die $ "Mark already exists: " ++ BC.unpack n'
+                \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch)
+              Just (n', _) -> die $ "Mark already exists: " ++ BC.unpack n'
           stashInventoryAndPristine mark (Just branch)
 
         notdot ('.':_) = False

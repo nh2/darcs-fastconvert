@@ -131,14 +131,14 @@ generateInfoIgnores p =
           base64ps = encode . BC.concat . BLC.toChunks $ gzipped
 
 dumpPatch :: (RepoPatch p) => (BLU.ByteString -> TreeIO ())
-  -> ((PatchInfoAnd p) x y -> Int -> TreeIO ()) -> (PatchInfoAnd p) x y
-  -> Int -> Int -> String -> TreeIO ()
+  -> ((PatchInfoAnd p) x y -> Int -> String -> TreeIO ())
+  -> (PatchInfoAnd p) x y -> Int -> Int -> String -> TreeIO ()
 dumpPatch printer doMark p from current bName =
   do dumpBits printer [ BLC.pack $ "progress " ++ show current ++ ": "
                           ++ patchName p
                       , BLC.pack $ "commit refs/heads/" ++ bName ]
      let message = patchMessage p `BL.append` generateInfoIgnores p
-     doMark p current
+     doMark p current bName
      dumpBits printer
         [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
         , BLU.fromString $ "data " ++ show (BL.length message + 1)
@@ -178,7 +178,8 @@ reset printer mbMark branch = do
     maybe (return ()) (\m -> printer . BLC.pack $ "from :" ++ show m) mbMark
 
 exportBranches :: (RepoPatch p) => (BLU.ByteString -> TreeIO ()) -> [PatchInfo]
-  -> Marks -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ()) -> Int
+  -> Marks
+  -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> String -> TreeIO ()) -> Int
   -> Int -> [(Bool, Branch p)] -> TreeIO ()
 exportBranches _ _ _ _ _ _ [] = return ()
 exportBranches printer tags existingMarks doMark from current
@@ -191,8 +192,9 @@ exportBranches printer tags existingMarks doMark from current
       map (\(_, b) -> (False, b)) bs
 
 dumpPatches :: forall p x y . (RepoPatch p) => (BLU.ByteString -> TreeIO ())
-  -> [PatchInfo] -> Marks -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> TreeIO ())
-  -> Int -> Int -> FL (PatchInfoAnd p) x y -> String -> [(Bool, Branch p)]
+  -> [PatchInfo] -> Marks
+  -> (forall cX cY .PatchInfoAnd p cX cY -> Int -> String -> TreeIO ()) -> Int
+  -> Int -> FL (PatchInfoAnd p) x y -> String -> [(Bool, Branch p)]
   -> TreeIO ()
 dumpPatches printer tags existingMarks doMark from current NilFL _ bs =
   exportBranches printer tags existingMarks doMark from current bs
@@ -207,7 +209,7 @@ dumpPatches printer tags existingMarks doMark from current (p:>:ps) bName bs =
            then dumpTag printer p from
            else dumpPatch printer doMark p from current bName
     else unless (inOrderTag tags p ||
-          (getMark existingMarks current == Just (patchHash p))) $
+          (fst `fmap` getMark existingMarks current == Just (patchHash p))) $
            die . unwords $ ["Marks do not correspond: expected"
                            , show (getMark existingMarks current), ", got "
                            , BC.unpack (patchHash p)]
@@ -229,10 +231,12 @@ fastExport' repo printer bs marks = do
   marksref <- newIORef marks
   let patches = newset2FL patchset
       tags = optimizedTags patchset
-      doMark :: (PatchInfoAnd p) x y -> Int -> TreeIO ()
-      doMark p n = do printer $ BLU.fromString $ "mark :" ++ show n
-                      liftIO $ modifyIORef marksref $
-                        \m -> addMark m n (patchHash p)
+      doMark :: (PatchInfoAnd p) x y -> Int -> String -> TreeIO ()
+      doMark p n b = do printer $ BLU.fromString $ "mark :" ++ show n
+                        let bn =
+                             pb2bn . parseBranch . BC.pack $ "refs/heads/" ++ b
+                        liftIO $ modifyIORef marksref $
+                          \m -> addMark m n (patchHash p, bn)
 
       readBranchRepo :: FilePath
         -> IO (Branch p)

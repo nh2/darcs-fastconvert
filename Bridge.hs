@@ -287,9 +287,11 @@ syncBridge' firstSync fullBridgePath repoType = do
           diffExportMarks oldSourceMarks sourceMarks
         newTargetExportMarks <-
           diffExportMarks oldTargetMarks targetMarks
-        -- We want the source patch ids with the target mark ids
-        let patchIDs = map ((!! 1).words) newSourceExportMarks
-            markIDs = map ((!! 0).words) newTargetExportMarks
+        -- We want the source patch ids with the target mark ids.
+        -- We drop the mark, but keep the rest of the line for patchIDs, since
+        -- darcs-marks have a trailing branch name, which we want to keep.
+        let patchIDs = map (unwords . drop 1 . words) newSourceExportMarks
+            markIDs = map (head . words) newTargetExportMarks
             markFudger m p = alterMark m ++ " " ++ p
             newEntries = zipWith markFudger markIDs patchIDs
         putStrLn $ show (length newEntries) ++ " marks to append."
