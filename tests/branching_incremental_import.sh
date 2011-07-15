@@ -67,9 +67,12 @@ EOF
 
 rm -rf R R-head-branch1 marks
 echo "$DATA" | darcs-fastconvert import --debug --write-marks=marks R
-echo "$DATA2" | darcs-fastconvert import --debug --read-marks=marks --create=no R
+echo "$DATA2" | darcs-fastconvert import --debug --read-marks=marks --write-marks=marks --create=no R
 
-echo -e '100: f00 head-branch1\n101: 20110614151834-5c01c-91ed99d02b622ea62b1cbc44f21d7be4328416c4.gz invalid_branch' > marks
+# We need to keep the marks for master, so the check passes in the next imports
+/bin/grep ^[62] marks > marks.new
+mv marks.new marks
+echo -e '101: 20110614151834-5c01c-91ed99d02b622ea62b1cbc44f21d7be4328416c4.gz invalid_branch\n100: f00 head-branch1' >> marks
 
 ! read -r -d '' FAIL_BRANCH_DATA <<'EOF'
 blob
@@ -89,7 +92,7 @@ M 100644 :22 q
 EOF
 
 # Catch invalid branch name
-not echo "$FAIL_BRANCH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R
+echo "$FAIL_BRANCH_DATA" | not darcs-fastconvert import --debug --read-marks=marks --create=no R
 
 ! read -r -d '' FAIL_HASH_DATA <<'EOF'
 blob
@@ -109,4 +112,4 @@ M 100644 :20 q
 EOF
 
 # Catch invalid hash
-not echo "$FAIL_HASH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R
+echo "$FAIL_HASH_DATA" | not darcs-fastconvert import --debug --read-marks=marks --create=no R

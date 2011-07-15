@@ -151,15 +151,24 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         doTreeIODebug x = liftIO $ doDebug x
     initPristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
-    marksref <- newIORef marks
-    let check :: FL (PatchInfoAnd p) x y -> [(Int, BC.ByteString)] -> IO ()
+    -- We can easily check the master patches, which will ensure that the marks
+    -- we've been given were used for a previous import of this repo.
+    let check :: FL (PatchInfoAnd p) x y
+          -> [(Int, (BC.ByteString, BC.ByteString))] -> IO ()
         check NilFL [] = return ()
-        check (p:>:ps) ((_,h):ms) = do
-          when (patchHash p /= h) $ die "Marks do not correspond."
+        check (p:>:ps) ((_, (h, _)):ms) = do
+          when (patchHash p /= h) $ die $ "Marks do not correspond. Got: \n" ++ (show $ patchHash p) ++ " expected: \n" ++ show h
           check ps ms
         check _ _ = die "Patch and mark count do not agree."
 
-        pristineDir = "_darcs" </> "pristine.hashed"
+        masterBName = pb2bn masterBranchName
+        isMaster (_, (_, bName)) = masterBName == bName
+        masterMarks = filter isMaster $ listMarks marks
+    putStrLn $ "Master marks: " ++ ((unlines . map show) $ masterMarks)
+    putStrLn $ "Master patches: " ++ ((unlines . mapFL (renderString . showPatchInfo . info)) $ patches)
+    check patches masterMarks
+    marksref <- newIORef marks
+    let pristineDir = "_darcs" </> "pristine.hashed"
 
         go :: State p -> B.ByteString -> TreeIO [BC.ByteString]
         go state rest = do objectStream <- liftIO $ parseObject inHandle rest
@@ -609,13 +618,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Just (n', _) -> die $ "Mark already exists: " ++ BC.unpack n'
           stashInventoryAndPristine mark (Just branch)
 
-    -- We can easily check the master patches, which will ensure that the marks
-    -- we've been given were used for a previous import of this repo.
-    let dropBName (mark, (hash, _)) = (mark, hash)
-        masterBName = pb2bn masterBranchName
-        isMaster (_, (_, bName)) = masterBName == bName
-        masterMarks = map dropBName . filter isMaster $ listMarks marks
-    check patches masterMarks
     (branches, _) <- hashedTreeIO (go initial B.empty) initPristine
       "_darcs/pristine.hashed"
     finalizeRepositoryChanges repo

@@ -23,7 +23,7 @@ darcs-fastconvert branch list $bridge_path | grep S
 
 darcs-fastconvert branch remove $bridge_path S
 
-not darcs-fastconvert branch list $bridge_path | grep S
+darcs-fastconvert branch list $bridge_path | not grep S
 
 cd S
 content=XXX_NOEXPORT_XXX
