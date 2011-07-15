@@ -226,11 +226,11 @@ parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
   p_logLines = specialLineDelimited (BC.pack "---") reverse
 
   specialLineDelimited = specialLineDelimited' [] where
-  specialLineDelimited' ls endCase endMod = do
-    perhaps <- toEOL
-    if perhaps == endCase
-      then return . endMod $ ls
-      else specialLineDelimited' (perhaps : ls) endCase endMod
+    specialLineDelimited' ls endCase endMod = do
+      perhaps <- toEOL
+      if perhaps == endCase
+        then return . endMod $ ls
+        else specialLineDelimited' (perhaps : ls) endCase endMod
 
   p_hash = (GitHash . BC.unpack) `fmap` lex (A.takeWhile1
     (A.inClass "0-9a-fA-F"))
