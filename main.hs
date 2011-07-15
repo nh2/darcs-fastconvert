@@ -31,12 +31,12 @@ data Cmd = Import { debug :: Bool
          | Branch {}
          deriving (Eq, Typeable, Data)
 
-data BranchCmd = List { bPath :: String }
-               | Track { bPath :: String
+data BranchCmd = List { branchBridgePath :: String }
+               | Track { branchBridgePath :: String
                      , branchType :: VCSType
-                     , branch :: String }
-               | Untrack { bPath :: String
-                        , branch :: String }
+                     , branchPath :: String }
+               | Untrack { branchBridgePath :: String
+                        , branchPath :: String }
                deriving (Eq, Typeable, Data)
 
 instance Attributes Cmd where
@@ -78,8 +78,8 @@ readInputType x = error $ "No such input-type " ++ show x
 
 instance Attributes BranchCmd where
   attributes _ =
-    bPath %> [ Positional 0 ] %%
-    branch %> [ Positional 1 ] %%
+    branchBridgePath %> [ Positional 0 ] %%
+    branchPath %> [ Positional 1 ] %%
     branchType %> [ Help "Branch repo type"
                   , ArgHelp "(git|darcs)"
                   , Default Darcs]
@@ -124,23 +124,23 @@ runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
 runCmdWithMarks c = Marks.handleCmdMarks (readMarks c) (writeMarks c)
 
 checkBridgeArg :: BranchCmd -> IO ()
-checkBridgeArg c = case bPath c of
-  "" -> die "Missing branch path argument."
+checkBridgeArg c = case branchBridgePath c of
+  "" -> die "Missing bridge path argument."
   _  -> return ()
 
 handleListBranches :: BranchCmd -> IO ()
 handleListBranches c = do
-  bs <- listBranches (bPath c)
+  bs <- listBranches (branchBridgePath c)
   forM_ bs (\(name, darcsPath) -> putStrLn $
     unwords ["Name:", name, "--", "Darcs path:", darcsPath])
 
 handleTrackBranch :: BranchCmd -> IO ()
 handleTrackBranch c = case branchType c of
-  Darcs -> trackBranch (bPath c) $ DarcsBranch (branch c)
-  _ -> trackBranch (bPath c) $ GitBranch (branch c)
+  Darcs -> trackBranch (branchBridgePath c) $ DarcsBranch (branchPath c)
+  _ -> trackBranch (branchBridgePath c) $ GitBranch (branchPath c)
 
 handleUntrackBranch  :: BranchCmd -> IO ()
-handleUntrackBranch c = untrackBranch (bPath c) (branch c)
+handleUntrackBranch c = untrackBranch (branchBridgePath c) (branchPath c)
 
 handleImport :: Cmd -> IO ()
 handleImport c | create c =

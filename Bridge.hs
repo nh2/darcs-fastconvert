@@ -480,7 +480,7 @@ trackBranch bridgePath (DarcsBranch bPath) =
         -- We'd rather fail now, than on the next export.
         unless (equalHead mainPatches branchPatches) $
           die "Cannot add branch that doesn't share patch #1 with master."
-        let bName = fp2bn bPath
+        let bName = fp2bn fullBranchPath
             clonePath = dropFileName mainDarcsPath </> bName
         repoLocation <-
           if cloned config
