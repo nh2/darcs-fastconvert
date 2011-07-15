@@ -1,4 +1,5 @@
 #!/bin/bash
+. lib
 set -ev
 
 rm -rf R S T
@@ -23,4 +24,4 @@ cd ..
 
 darcs-fastconvert export R S
 # Ensure we fail if initial patches aren't the same...
-darcs-fastconvert export R T && exit 1 || :;
+not darcs-fastconvert export R T

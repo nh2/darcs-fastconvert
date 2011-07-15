@@ -39,6 +39,7 @@ runtest' (ShellTest _ _ dp) srcdir =
      setenv "DARCS" dp
 -- Warning:  A do-notation statement discarded a result of type String.
      _ <- Shellish.run "bash" [ "test" ]
+     writefile ".darcs/defaults" "ALL ignore-times"
      return Success
    `catch_sh` \e -> case e of
       RunFailed _ 200 _ -> return Skipped
@@ -47,6 +48,7 @@ runtest' (ShellTest _ _ dp) srcdir =
 runtest :: ShellTest -> ShIO Result
 runtest t =
  withTmp $ \dir -> do
+  cp "tests/lib" dir
   cp ("tests" </> testfile t) (dir </> "test")
   srcdir <- pwd
   silently $ sub $ cd dir >> runtest' t srcdir

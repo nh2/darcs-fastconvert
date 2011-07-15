@@ -1,3 +1,5 @@
+#!/bin/bash
+. lib
 rm -rf R R_bridge S
 
 darcs init --repo R
@@ -9,10 +11,10 @@ darcs-fastconvert create-bridge R
 
 bridge_path=R_bridge/.darcs_bridge
 # Cannot remove master branch...
-darcs-fastconvert branch remove $bridge_path master && exit 1 || :;
+not darcs-fastconvert branch remove $bridge_path master
 
 # Cannot remove non-existent branch...
-darcs-fastconvert branch remove $bridge_path non-existent && exit 1 || :;
+not darcs-fastconvert branch remove $bridge_path non-existent
 
 darcs get R S
 darcs-fastconvert branch add $bridge_path S
@@ -21,7 +23,7 @@ darcs-fastconvert branch list $bridge_path | grep S
 
 darcs-fastconvert branch remove $bridge_path S
 
-(darcs-fastconvert branch list $bridge_path | grep S) && exit 1 || :;
+not darcs-fastconvert branch list $bridge_path | grep S
 
 cd S
 content=XXX_NOEXPORT_XXX

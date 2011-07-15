@@ -1,4 +1,5 @@
 #!/bin/bash
+. lib
 set -ev
 ! read -r -d '' DATA <<'EOF'
 blob
@@ -88,7 +89,7 @@ M 100644 :22 q
 EOF
 
 # Catch invalid branch name
-echo "$FAIL_BRANCH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R && exit 1 || :;
+not echo "$FAIL_BRANCH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R
 
 ! read -r -d '' FAIL_HASH_DATA <<'EOF'
 blob
@@ -108,4 +109,4 @@ M 100644 :20 q
 EOF
 
 # Catch invalid hash
-echo "$FAIL_HASH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R && exit 1 || :;
+not echo "$FAIL_HASH_DATA" | darcs-fastconvert import --debug --read-marks=marks --create=no R
