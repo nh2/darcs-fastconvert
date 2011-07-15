@@ -202,11 +202,16 @@ parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
     p_commitHeader
     author <- p_author
     date <- p_date
-    msg <- p_commitMsg
+    (msg : description) <- p_commitMsg
+    let commitLog = removePatchHeader msg : description
     _ <- specialLineDelimited BC.empty id -- skip the diff summary
     diffs <- many p_diff
     _ <- p_endMarker
-    return $ GitPatch author date msg diffs
+    return $ GitPatch author date commitLog diffs
+
+  removePatchHeader msg = if BC.pack "[PATCH" `BC.isPrefixOf` msg
+    then BC.drop 2 $ BC.dropWhile (/= ']') msg
+    else msg
 
   p_endMarker = do
     lexString "--" >> toEOL
