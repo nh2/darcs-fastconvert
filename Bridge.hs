@@ -25,7 +25,7 @@ import System.Directory ( createDirectory, canonicalizePath
 import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
 import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName
-                       , dropFileName )
+                       , dropFileName, takeFileName )
 import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
@@ -84,6 +84,22 @@ gitExportMarksName, gitImportMarksName :: String
 gitExportMarksName = "git_export_marks"
 gitImportMarksName = "git_import_marks"
 
+-- |findBridgeDir will return the filepath of the bridge dir of a given
+-- directory. If foo is given and foo/.darcs_bridge exists, then the
+-- canonicalized version of foo/.darcs_bridge will be returned, otherwise only
+-- .darcs_bridge will be accepted, canonicalized and returned.
+findBridgeDir :: FilePath -> IO (Maybe FilePath)
+findBridgeDir dir = do
+  fullPath <- canonicalizePath dir `catch` \_ -> die $ "Invalid path: " ++ dir
+  if takeFileName fullPath == bridgeDirName
+    then return $ Just fullPath
+    else do
+      let subDirPath = fullPath </> bridgeDirName
+      isSubDirBridgeDir <- doesDirectoryExist subDirPath
+      if isSubDirBridgeDir
+        then return $ Just subDirPath
+        else return Nothing
+
 -- |createBridge sets up a Darcs bridge. If shouldClone is true, a dedicated
 -- bridge directory is created, and the source repo is cloned into it;
 -- otherwise, the target repository is created alongside the source repo.
@@ -98,11 +114,12 @@ createBridge repoPath shouldClone = do
       cloneIfNeeded shouldClone repoType fullOrigRepoPath
     targetRepoPath <- initTargetRepo sourceRepoPath repoType
     setCurrentDirectory topLevelDir
-    bridgeDirExists <- doesDirectoryExist bridgeDirName
-    when bridgeDirExists (do
-        putStrLn $ "Existing bridge directory detected: "
-          ++ (topLevelDir </> bridgeDirName)
-        exitFailure)
+    mbBridgeDir <- findBridgeDir "."
+    case mbBridgeDir of
+      Nothing -> return ()
+      Just path -> do
+        putStrLn $ "Existing bridge directory detected: " ++ path
+        exitFailure
     createDirectory bridgeDirName
     putStrLn $ unwords ["Initialised target", show $ otherVCS repoType,
                         "repo at", targetRepoPath]
@@ -512,10 +529,13 @@ untrackBranch bridgePath bName =
 -- action, which takes the fullBridgePath as its argument.
 withBridgeLock :: FilePath -> (FilePath -> IO a) -> IO a
 withBridgeLock bridgePath action = do
-    fullBridgePath <- canonicalizePath bridgePath
-    let lockPath = fullBridgePath </> "lock"
-    gotLock <- withLockCanFail lockPath $ action fullBridgePath
-    case gotLock of
-        Left _  -> do putStrLn $ "Cannot take bridge lock:" ++ lockPath
-                      exitFailure
-        Right a -> return a
+    mbFullBridgePath <- findBridgeDir bridgePath
+    case mbFullBridgePath of
+      Nothing -> die $ "Cannot find .darcs_bridge in " ++ bridgePath
+      Just fullBridgePath -> do
+        let lockPath = fullBridgePath </> "lock"
+        gotLock <- withLockCanFail lockPath $ action fullBridgePath
+        case gotLock of
+            Left _  -> do putStrLn $ "Cannot take bridge lock:" ++ lockPath
+                          exitFailure
+            Right a -> return a
