@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
-module Bridge( createBridge, syncBridge, VCSType(..), listBranches, addBranch
-             , removeBranch, RepoBranch(..) ) where
+module Bridge( createBridge, syncBridge, VCSType(..), listBranches, trackBranch
+             , untrackBranch, RepoBranch(..) ) where
 
 import Export ( fastExport )
 import Import ( fastImportIncremental )
@@ -446,8 +446,8 @@ listBranches :: FilePath -> IO [(String, FilePath)]
 listBranches bridgePath = withBridgeLock bridgePath $ \fullBridgePath ->
   branches `fmap` getConfig fullBridgePath
 
-addBranch :: FilePath -> RepoBranch -> IO ()
-addBranch bridgePath (GitBranch bName) =
+trackBranch :: FilePath -> RepoBranch -> IO ()
+trackBranch bridgePath (GitBranch bName) =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
     withCurrentDirectory (git_path config) $ do
@@ -467,7 +467,7 @@ addBranch bridgePath (GitBranch bName) =
     dropLeading (' ':s) = dropLeading s
     dropLeading s       = s
 
-addBranch bridgePath (DarcsBranch bPath) =
+trackBranch bridgePath (DarcsBranch bPath) =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
     let mainDarcsPath = darcs_path config
@@ -492,13 +492,13 @@ addBranch bridgePath (DarcsBranch bPath) =
 addBranchToConfig :: FilePath -> BridgeConfig -> (String, FilePath) -> IO ()
 addBranchToConfig fullBridgePath config branch = do
   when (branch `elem` branches config) $
-    die $ "Branch " ++ fst branch ++ " is already managed by the bridge!"
+    die $ "Branch " ++ fst branch ++ " is already tracked by the bridge!"
   let newBranches = branch : branches config
   putConfig fullBridgePath $ config { branches = newBranches }
 
-removeBranch :: FilePath -> String -> IO ()
-removeBranch _ "master" = die "Cannot remove master branch."
-removeBranch bridgePath bName =
+untrackBranch :: FilePath -> String -> IO ()
+untrackBranch _ "master" = die "Cannot remove master branch."
+untrackBranch bridgePath bName =
   withBridgeLock bridgePath $ \fullBridgePath -> do
     config <- getConfig fullBridgePath
     let (branch, others) = partition ((== bName) . fst) $ branches config

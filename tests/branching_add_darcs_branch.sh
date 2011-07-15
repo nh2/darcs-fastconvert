@@ -12,4 +12,4 @@ darcs get -q foo foo1
 
 darcs-fastconvert create-bridge foo
 
-darcs-fastconvert branch add foo_bridge/.darcs_bridge foo1
+darcs-fastconvert branch track foo_bridge/.darcs_bridge foo1

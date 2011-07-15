@@ -32,10 +32,10 @@ data Cmd = Import { debug :: Bool
          deriving (Eq, Typeable, Data)
 
 data BranchCmd = List { bPath :: String }
-               | Add { bPath :: String
+               | Track { bPath :: String
                      , branchType :: VCSType
                      , branch :: String }
-               | Remove { bPath :: String
+               | Untrack { bPath :: String
                         , branch :: String }
                deriving (Eq, Typeable, Data)
 
@@ -113,12 +113,12 @@ instance RecordCommand Cmd where
 
 instance RecordCommand BranchCmd where
   mode_summary List {} = "List all managed branches."
-  mode_summary Add {}  = "Add a branch, so it is managed."
-  mode_summary Remove {}  = "No longer manage a branch."
+  mode_summary Track {}  = "Add a branch, so it is tracked."
+  mode_summary Untrack {}  = "No longer track a branch."
 
   run' c@(List {}) _ = checkBridgeArg c >> handleListBranches c
-  run' c@(Add {}) _ = checkBridgeArg c >> handleAddBranch c
-  run' c@(Remove {}) _ = checkBridgeArg c >> handleRemoveBranch c
+  run' c@(Track {}) _ = checkBridgeArg c >> handleTrackBranch c
+  run' c@(Untrack {}) _ = checkBridgeArg c >> handleUntrackBranch c
 
 runCmdWithMarks :: Cmd -> (Marks.Marks -> IO Marks.Marks) -> IO ()
 runCmdWithMarks c = Marks.handleCmdMarks (readMarks c) (writeMarks c)
@@ -134,13 +134,13 @@ handleListBranches c = do
   forM_ bs (\(name, darcsPath) -> putStrLn $
     unwords ["Name:", name, "--", "Darcs path:", darcsPath])
 
-handleAddBranch :: BranchCmd -> IO ()
-handleAddBranch c = case branchType c of
-  Darcs -> addBranch (bPath c) $ DarcsBranch (branch c)
-  _ -> addBranch (bPath c) $ GitBranch (branch c)
+handleTrackBranch :: BranchCmd -> IO ()
+handleTrackBranch c = case branchType c of
+  Darcs -> trackBranch (bPath c) $ DarcsBranch (branch c)
+  _ -> trackBranch (bPath c) $ GitBranch (branch c)
 
-handleRemoveBranch  :: BranchCmd -> IO ()
-handleRemoveBranch c = removeBranch (bPath c) (branch c)
+handleUntrackBranch  :: BranchCmd -> IO ()
+handleUntrackBranch c = untrackBranch (bPath c) (branch c)
 
 handleImport :: Cmd -> IO ()
 handleImport c | create c =
