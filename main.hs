@@ -9,6 +9,8 @@ import Control.Monad ( forM_ )
 import Control.Monad.Trans ( liftIO )
 import qualified Data.ByteString.Lazy as BL
 import System.Console.CmdLib
+import System.Directory ( getCurrentDirectory )
+import System.FilePath ( makeRelative )
 import System.IO ( stdin )
 
 data Cmd = Import { debug :: Bool
@@ -131,8 +133,14 @@ checkBridgeArg c = case branchBridgePath c of
 handleListBranches :: BranchCmd -> IO ()
 handleListBranches c = do
   bs <- listBranches (branchBridgePath c)
-  forM_ bs (\(name, darcsPath) -> putStrLn $
-    unwords ["Name:", name, "--", "Darcs path:", darcsPath])
+  let maxNameLen = maximum $ map (length . fst) bs
+  cwd <- getCurrentDirectory
+  putStrLn "Tracked branches:"
+  forM_ bs (\(name, darcsPath) -> do
+    let relativePath = makeRelative cwd darcsPath
+    putStrLn $ unwords [ "Name:", name
+                       , replicate (maxNameLen - length name) ' ' , "~"
+                       , "Darcs path:", relativePath])
 
 handleTrackBranch :: BranchCmd -> IO ()
 handleTrackBranch c = case branchType c of
