@@ -4,7 +4,7 @@ module Patch (readAndApplyGitEmail) where
 import Utils
 
 import Control.Applicative ( Alternative, (<|>) )
-import Control.Monad ( unless, when )
+import Control.Monad ( unless, when, forM_ )
 import Control.Monad.Trans ( liftIO )
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Combinator( many )
@@ -25,16 +25,17 @@ import Darcs.Flags( Compression(..) )
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, apply, invert )
 import Darcs.Patch.Info ( patchinfo, PatchInfo )
 import Darcs.Patch.PatchInfoAnd ( n2pia )
+import Darcs.Patch.Show ( showPatch )
 import Darcs.Patch.Prim ( sortCoalesceFL, hunk, addfile, rmfile, adddir )
 import Darcs.Patch.Prim.Class ( PrimOf )
 import Darcs.Repository ( withRepoLock, RepoJob(..), Repository
                         , finalizeRepositoryChanges, tentativelyAddPatch )
 import Darcs.SignalHandler ( withSignalsBlocked )
-import Darcs.Utils ( withCurrentDirectory )
+import Darcs.Utils ( withCurrentDirectory, promptYorn )
 import Darcs.Witnesses.Ordered ( FL(..), (+>+), RL(..) )
 import Darcs.Witnesses.Sealed ( Sealed(..), joinGap, emptyGap, freeGap
                               , unFreeLeft, FreeLeft )
-import Darcs.Utils ( promptYorn )
+import Printer ( renderString )
 
 type Author = B.ByteString
 type Message = [B.ByteString]
@@ -81,9 +82,14 @@ readAndApplyGitEmail repoPath shouldPrompt patchFile =
     putStrLn "Attempting to parse input."
     h <- openFile patchFile ReadMode
     ps <- parseGitEmail h
-    putStrLn $ "Successfully parsed " ++ (show . length $ ps) ++ " patches."
+    let patchCount = length ps
+    putStrLn $ "Successfully parsed " ++ show patchCount ++ " patches."
     putStrLn "Attempting to apply patches."
-    mapM_ (applyGitPatch shouldPrompt) ps
+    forM_ (zip ([1..] :: [Int]) ps) $ \(index, p@(GitPatch _ _ msg _)) -> do
+      putStrLn $ unwords
+        [ "Applying patch", show index, "of", show patchCount ++ ":"
+        , BC.unpack $ head msg]
+      applyGitPatch shouldPrompt p
     putStrLn "Succesfully applied patches."
 
 applyGitPatch :: Bool -> GitPatch -> IO ()
@@ -110,9 +116,10 @@ applyChanges shouldPrompt info changes repo = do
     applyAllOrNone' _ NilFL = return ()
     applyAllOrNone' applied (p :>: ps) = do
       apply p `catch` \_ -> do
-        putStrLn "A prim failed to apply, rolling back changes made."
+        putStrLn $ "Rolling back after prim failed to apply: "
+          ++ renderString (showPatch p)
         apply $ invert applied
-        die $ "A prim could not be applied, no changes have been made."
+        die "A prim did not apply, no changes from this patch have been made."
       applyAllOrNone' (p :<: applied) ps
 
   changesToPrims :: [Change] -> IO (FreeLeft (FL (PrimOf p)))
@@ -151,8 +158,9 @@ applyChanges shouldPrompt info changes repo = do
     actualHash <- gitHashFile fp
     when (actualHash /= expectedHash) $ do
       continue <- if shouldPrompt
-        then promptYorn $
-          "Hash of " ++ fp ++ " does not match patch, continue anyway?"
+        then promptYorn $ "WARNING: Hash of " ++ fp ++ " does not match patch"
+             ++ "\nNo changes will be recorded, if the patch does not apply."
+             ++ "\nContinue anyway?"
         else return False
       unless continue $ die . unwords $
           ["invalid hash of file", fp, "\nexpected:", show expectedHash
