@@ -157,15 +157,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -> [(Int, (BC.ByteString, BC.ByteString))] -> IO ()
         check NilFL [] = return ()
         check (p:>:ps) ((_, (h, _)):ms) = do
-          when (patchHash p /= h) $ die $ "Marks do not correspond. Got: \n" ++ (show $ patchHash p) ++ " expected: \n" ++ show h
+          when (patchHash p /= h) $ die "Marks do not correspond."
           check ps ms
         check _ _ = die "Patch and mark count do not agree."
 
         masterBName = pb2bn masterBranchName
         isMaster (_, (_, bName)) = masterBName == bName
         masterMarks = filter isMaster $ listMarks marks
-    putStrLn $ "Master marks: " ++ ((unlines . map show) $ masterMarks)
-    putStrLn $ "Master patches: " ++ ((unlines . mapFL (renderString . showPatchInfo . info)) $ patches)
     check patches masterMarks
     marksref <- newIORef marks
     let pristineDir = "_darcs" </> "pristine.hashed"
