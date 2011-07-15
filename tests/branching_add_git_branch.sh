@@ -14,7 +14,7 @@ darcs-fastconvert create-bridge foo
 # Create a git branch at the current state.
 (cd foo_bridge/foo_git && git branch foo1)
 
-darcs-fastconvert branch track --branch-type git foo_bridge/.darcs_bridge foo1
+darcs-fastconvert branch track --branch-type git foo_bridge foo1
 
 [[ -e foo_bridge/foo-head-foo1/a
    && $(darcs cha --repo foo_bridge/foo-head-foo1 --count) -eq 1 ]]

@@ -9,7 +9,7 @@ cd ..
 
 darcs-fastconvert create-bridge R
 
-bridge_path=R_bridge/.darcs_bridge
+bridge_path=R_bridge
 # Cannot remove master branch...
 not darcs-fastconvert branch remove $bridge_path master
 
