@@ -101,6 +101,9 @@ instance RecordCommand Cmd where
   mode_help Branch {} = helpCommands (recordCommands (undefined :: BranchCmd))
   mode_help _ = ""
 
+  rec_superCommand Branch {} = True
+  rec_superCommand _ = False
+
   run' c@(Import {}) _ = handleImport c
   run' c@(Export {}) _ = handleExport c
   run' c@(CreateBridge {}) _ = handleCreateBridge c
