@@ -21,6 +21,7 @@ import Control.Monad ( when, forM_, foldM, unless )
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
 import Data.Maybe ( isNothing, fromMaybe, fromJust )
+import Numeric ( showHex )
 import Prelude hiding ( readFile, lex, log, pi )
 import System.Directory ( doesFileExist, createDirectory
                         , createDirectoryIfMissing, getDirectoryContents
@@ -28,6 +29,7 @@ import System.Directory ( doesFileExist, createDirectory
 import System.IO ( Handle )
 import System.FilePath ( (</>) )
 import System.PosixCompat.Files ( createLink )
+import System.Random ( randomRIO )
 
 import Darcs.Commands ( commandCommand )
 import qualified Darcs.Commands.Get as DCG
@@ -112,14 +114,17 @@ data ObjectStream = Elem B.ByteString Object
 data State p where
     Toplevel :: Marked -> ParsedBranchName -> State p
     InCommit :: Marked -> ParsedBranchName -> Tree IO -> RL (PrimOf p) cX cY
-      -> RL (PrimOf p) cA cB -> PatchInfo -> State p
+      -> RL (PrimOf p) cA cB -> PatchInfo -> Maybe String -> State p
 
 instance Show (State p) where
   show (Toplevel _ _) = "Toplevel"
-  show (InCommit _ _ _ _ _ _) = "InCommit"
+  show (InCommit _ _ _ _ _ _ _) = "InCommit"
 
 masterBranchName :: ParsedBranchName
 masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
+
+dummyAuthor :: BC.ByteString
+dummyAuthor = BC.pack "Dummy Tag Author <>"
 
 fastImport :: Bool -> Handle -> (String -> IO ()) -> String -> RepoFormat
   -> IO Marks
@@ -181,7 +186,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           doTreeIODebug "Handling end-of-stream"
           -- We won't necessarily be InCommit at the EOS.
           case state of
-            s@(InCommit _ _ _ _ _ _) -> finalizeCommit s
+            s@(InCommit _ _ _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
           -- The stream may not reset us to master, so do it manually.
           restoreToBranch "" $ parseBranch $ BC.pack "refs/heads/master"
@@ -388,16 +393,17 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           current <- treeProvider
           liftIO $ foldM (flip applyToTree) current invertedPrims
 
-        diffCurrent (InCommit mark branch start ps endps pInfo) fn = do
+        diffCurrent (InCommit mark branch start ps endps pInfo mergeID) fn = do
           current <- updateTreeWithPrims fn endps updateHashes
           Sealed diff <- unFreeLeft `fmap`
             liftIO (treeDiff (const TextFile) start current)
           let newps = reverseFL diff +<+ ps
-          return $ InCommit mark branch current newps endps pInfo
+          return $ InCommit mark branch current newps endps pInfo mergeID
         diffCurrent _ _ =
           error "diffCurrent is never valid outside of a commit."
 
-        checkForNewFile s@(InCommit mark branch start ps endps pInfo) path = do
+        checkForNewFile s@(InCommit mark branch start ps endps pInfo mergeID)
+         path = do
           let rawPath = BC.unpack path
               floatedPath = floatPath rawPath
               -- Only update the hash of the newly added file.
@@ -412,15 +418,18 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 `fmap` readFile floatedPath
               let hunkPatch = hunk rawPath 1 [] contents
                   addPatches = hunkPatch :<: addfile rawPath :<: ps
-              return $ InCommit mark branch current addPatches endps pInfo
+              return $
+                InCommit mark branch current addPatches endps pInfo mergeID
             -- If the file already existed, just diff.
             (Just _) -> diffCurrent s rawPath
         checkForNewFile _ _ = error
           "checkForNewFile is never valid outside of a commit."
 
-        mergeIfNecessary :: Marked -> Merges -> TreeIO ()
-        mergeIfNecessary _ [] = return ()
+        mergeIfNecessary :: Marked -> Merges -> TreeIO (Maybe String)
+        mergeIfNecessary _ [] = return Nothing
         mergeIfNecessary currentMark merges  = do
+          randStr <- liftIO $
+            flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
           let cleanup :: Int -> TreeIO ()
               cleanup m = liftIO $ forM_ ["pristine", "hashed_inventory"] $
                    removeFile . (("_darcs" </> show m ++ "tentative_") ++)
@@ -431,12 +440,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO $ mapM_ (doDebug . ("Merging branch: " ++) . show) merges
           (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
           restoreToMark "" (fromJust currentMark)
+          addtag dummyAuthor (BC.pack $ "pre-merge-target: " ++ randStr)
           us <- liftIO $ readTentativeRepo repo
           us' :\/: them' <- return $ findUncommon us them
           (Sealed merged) <- return $ merge2FL us' them'
           liftIO . sequence_ $ mapFL addToTentativeInv merged
           apply merged
           mapM_ cleanup merges
+          return $ Just randStr
 
         tryParseDarcsPatches :: B.ByteString ->
           (B.ByteString, (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p))))
@@ -517,7 +528,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 , "previous:", show previous, "from:", show from]
               Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
-          mergeIfNecessary fromMark merges
+          mergeID <- mergeIfNecessary fromMark merges
           (message', (Sealed2 prePatches, Sealed2 postPatches)) <-
             return $ tryParseDarcsPatches message
           let preCount = lengthRL prePatches
@@ -528,32 +539,35 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           apply prePatches
           startstate <- updateHashes
           pInfo <- makeinfo author message' False
-          return $ InCommit mark branch startstate prePatches postPatches pInfo
+          return $
+           InCommit mark branch startstate prePatches postPatches pInfo mergeID
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
+        process s@(InCommit _ _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
           doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.copy (markpath m) (floatPath $ BC.unpack path)
           checkForNewFile s path
 
-        process s@(InCommit _ _ _ _ _ _) (Modify (Inline bits) path) = do
+        process s@(InCommit _ _ _ _ _ _ _) (Modify (Inline bits) path) = do
           doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
           checkForNewFile s path
 
-        process (InCommit _ _ _ _ _ _) (Modify (ModifyHash hash) path) =
+        process (InCommit _ _ _ _ _ _ _) (Modify (ModifyHash hash) path) =
           die $ unwords ["Cannot currently handle Git hash:",
              BC.unpack hash, "for file", BC.unpack path,
              "Do not use the --no-data option of git fast-export."]
 
-        process (InCommit mark branch _ ps endps pInfo) (Delete path) = do
+        process (InCommit mark branch _ ps endps pInfo mergeID)
+         (Delete path) = do
           doTreeIODebug $ "Handling delete of: " ++ BC.unpack path
           let filePath = BC.unpack path
               rmPatch = rmfile filePath
           TM.unlink $ floatPath filePath
           current <- updateHashes
-          return $ InCommit mark branch current (rmPatch :<: ps) endps pInfo
+          return $
+            InCommit mark branch current (rmPatch :<: ps) endps pInfo mergeID
 
-        process s@(InCommit _ _ _ _ _ _) (Copy from to) = do
+        process s@(InCommit _ _ _ _ _ _ _) (Copy from to) = do
           doTreeIODebug $ unwords
             ["Handling copy from of:", BC.unpack from, "to", BC.unpack to]
           let unpackFloat = floatPath.BC.unpack
@@ -562,7 +576,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- an addfile.
           diffCurrent s $ BC.unpack to
 
-        process (InCommit mark branch start ps endps pInfo)
+        process (InCommit mark branch start ps endps pInfo mergeID)
           (Rename from to) = do
           doTreeIODebug $ unwords
             ["Handling rename from of:", BC.unpack from, "to", BC.unpack to]
@@ -586,11 +600,12 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           let movePatches = move uFrom uTo :<: preparePatchesRL
           TM.rename (floatPath uFrom) (floatPath uTo)
           current <- updateHashes
+          let ps' = movePatches +<+ ps
           return $
-            InCommit mark branch current (movePatches +<+ ps) endps pInfo
+            InCommit mark branch current ps' endps pInfo mergeID
 
         -- When we leave the commit, create a patch for the cumulated prims.
-        process s@(InCommit mark branch _ _ _ _) x = do
+        process s@(InCommit mark branch _ _ _ _ _) x = do
           finalizeCommit s
           process (Toplevel mark branch) x
 
@@ -601,7 +616,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         finalizeCommit :: State p -> TreeIO ()
         finalizeCommit (Toplevel _ _) =
           error "Cannot finalize commit at toplevel."
-        finalizeCommit (InCommit mark branch _ ps endps pInfo) = do
+        finalizeCommit (InCommit mark branch _ ps endps pInfo mergeID) = do
           doTreeIODebug "Finalising commit."
           (prims :: FL p cX cY)  <- return $ fromPrims $
             sortCoalesceFL . reverseRL $ endps +<+ unsafeCoercePEnd ps
@@ -614,6 +629,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Nothing -> liftIO $ modifyIORef marksref $
                 \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch)
               Just (n', _) -> die $ "Mark already exists: " ++ BC.unpack n'
+          let doTag randStr = addtag dummyAuthor
+                                (BC.pack $ "post-merge-target: " ++ randStr)
+          maybe (return ()) doTag mergeID
           stashInventoryAndPristine mark (Just branch)
 
     (branches, _) <- hashedTreeIO (go initial B.empty) initPristine

@@ -86,7 +86,8 @@ Executable darcs-fastconvert
                  unix-compat >= 0.1 && < 0.3,
                  transformers >= 0.2 && < 0.3,
                  base64-bytestring >= 0.1 && < 0.2,
-                 zlib >= 0.5 && < 0.6
+                 zlib >= 0.5 && < 0.6,
+                 random >= 1.0 && < 1.1
 
   -- Modules not exported by this package.
   Other-modules: Export Import Marks Utils Bridge Stash Patch
