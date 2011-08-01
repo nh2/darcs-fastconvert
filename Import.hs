@@ -44,7 +44,8 @@ import Darcs.Repository ( Repository, withRepoLock, RepoJob(..)
                         , readRepoUsingSpecificInventory , withRepository
                         , createRepository , createPristineDirectoryTree
                         , finalizeRepositoryChanges , cleanRepository )
-import Darcs.Repository.HashedRepo ( addToTentativeInventory )
+import Darcs.Repository.HashedRepo ( addToTentativeInventory
+                                   , addToSpecificInventory )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 import Darcs.Repository.State( readRecorded )
@@ -124,7 +125,7 @@ masterBranchName :: ParsedBranchName
 masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
 
 dummyAuthor :: BC.ByteString
-dummyAuthor = BC.pack "Dummy Tag Author <>"
+dummyAuthor = BC.pack "Dummy Author <>"
 
 fastImport :: Bool -> Handle -> (String -> IO ()) -> String -> RepoFormat
   -> IO Marks
@@ -366,16 +367,19 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         addToTentativeInv = addToTentativeInventory (extractCache repo)
           GzipCompression
 
-        addtag author msg =
+        addtag prefix author msg =
           do pInfo <- makeinfo author msg True
-             gotany <- liftIO $
-               doesFileExist "_darcs/tentative_hashed_pristine"
+             gotany <- liftIO $ doesFileExist $
+               "_darcs" </> prefix ++ "tentative_pristine"
+             let invPath = prefix ++ "tentative_hashed_inventory"
              deps <- if gotany then liftIO $
-               getTagsRight `fmap` readTentativeRepo repo
+               getTagsRight `fmap` readRepoUsingSpecificInventory invPath repo
                                else return []
              let ident = NilFL :: FL (RealPatch Prim) cX cX
                  patch = adddeps (infopatch pInfo ident) deps
-             liftIO . addToTentativeInv $ n2pia patch
+                 addToInv = addToSpecificInventory invPath (extractCache repo)
+                              GzipCompression
+             liftIO . addToInv . n2pia $ patch
              return ()
 
         primsAffectingFile :: FilePath -> RL (PrimOf p) cX cY
@@ -435,12 +439,17 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                    removeFile . (("_darcs" </> show m ++ "tentative_") ++)
               getMarkPatches m = do
                 restoreToMark (show m) m
+                -- Tag the source, so we know the pre-merge context of each set
+                -- of patches.
+                addtag (show m) dummyAuthor
+                  (BC.pack $ "darcs-fastconvert merge pre-source: " ++ randStr)
                 liftIO $ seal `fmap` readRepoUsingSpecificInventory
                   (show m ++ "tentative_hashed_inventory") repo
           liftIO $ mapM_ (doDebug . ("Merging branch: " ++) . show) merges
           (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
           restoreToMark "" (fromJust currentMark)
-          addtag dummyAuthor (BC.pack $ "pre-merge-target: " ++ randStr)
+          addtag "" dummyAuthor
+            (BC.pack $ "darcs-fastconvert merge pre-target: " ++ randStr)
           us <- liftIO $ readTentativeRepo repo
           us' :\/: them' <- return $ findUncommon us them
           (Sealed merged) <- return $ merge2FL us' them'
@@ -498,7 +507,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         process (Toplevel n b) (Tag what author msg) = do
           if Just what == n
-             then addtag author msg
+             then addtag "" author msg
              else liftIO $ printer $ "WARNING: Ignoring out-of-order tag " ++
                              head (lines $ BC.unpack msg)
           return (Toplevel n b)
@@ -629,8 +638,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Nothing -> liftIO $ modifyIORef marksref $
                 \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch)
               Just (n', _) -> die $ "Mark already exists: " ++ BC.unpack n'
-          let doTag randStr = addtag dummyAuthor
-                                (BC.pack $ "post-merge-target: " ++ randStr)
+          let doTag randStr = addtag "" dummyAuthor
+                               (BC.pack $ "darcs-fastconvert merge post: "
+                                 ++ randStr)
           maybe (return ()) doTag mergeID
           stashInventoryAndPristine mark (Just branch)
 
