@@ -160,15 +160,15 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     -- We can easily check the master patches, which will ensure that the marks
     -- we've been given were used for a previous import of this repo.
     let check :: FL (PatchInfoAnd p) x y
-          -> [(Int, (BC.ByteString, BC.ByteString))] -> IO ()
+          -> [(Int, (BC.ByteString, BC.ByteString, BC.ByteString))] -> IO ()
         check NilFL [] = return ()
-        check (p:>:ps) ((_, (h, _)):ms) = do
+        check (p:>:ps) ((_, (h, _, _)):ms) = do
           when (patchHash p /= h) $ die "Marks do not correspond."
           check ps ms
         check _ _ = die "Patch and mark count do not agree."
 
         masterBName = pb2bn masterBranchName
-        isMaster (_, (_, bName)) = masterBName == bName
+        isMaster (_, (_, bName, _)) = masterBName == bName
         masterMarks = filter isMaster $ listMarks marks
     check patches masterMarks
     marksref <- newIORef marks
@@ -262,7 +262,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           case getMark marks mark of
             Nothing -> die $ "Cannot restore to mark: " ++ show mark
              ++ " since it is not in the current import, or the marks file"
-            Just (hash, branch) -> do
+            Just (hash, branch, _) -> do
               doTreeIODebug $ unwords [ "Mark has hash:", BC.unpack hash
                                       , "and branch:", BC.unpack branch]
               branchDir <- liftIO $
@@ -636,8 +636,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             Nothing -> return ()
             Just n -> case getMark marks n of
               Nothing -> liftIO $ modifyIORef marksref $
-                \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch)
-              Just (n', _) -> die $ "Mark already exists: " ++ BC.unpack n'
+                \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch, BC.pack "TODO: Does this matter?")
+              Just (n', _, _) -> die $ "Mark already exists: " ++ BC.unpack n'
           let doTag randStr = addtag "" dummyAuthor
                                (BC.pack $ "darcs-fastconvert merge post: "
                                  ++ randStr)
