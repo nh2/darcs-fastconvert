@@ -1,6 +1,7 @@
 module Marks where
 
 import qualified Data.IntMap as IM
+import qualified Data.Map as M
 import Data.List ( find )
 import qualified Data.ByteString.Char8 as BS
 import Prelude hiding ( id, lines )
@@ -8,22 +9,29 @@ import System.Directory( removeFile )
 
 -- Patch Hash, Branch Name, Context Hash (Hash of all patches <= this mark)
 type MarkContent = (BS.ByteString, BS.ByteString, BS.ByteString)
-type Marks = IM.IntMap MarkContent
+-- Mark number, patch hash, branch name.
+type ContextContent = (Int, BS.ByteString, BS.ByteString)
+
+type Marks = (IM.IntMap MarkContent, M.Map BS.ByteString ContextContent)
 
 emptyMarks :: Marks
-emptyMarks = IM.empty
+emptyMarks = (IM.empty, M.empty)
 
 lastMark :: Marks -> Int
-lastMark m = if IM.null m then 0 else fst $ IM.findMax m
+lastMark (marks, _)  = if IM.null marks then 0 else fst $ IM.findMax marks
 
 getMark :: Marks -> IM.Key -> Maybe MarkContent
-getMark marks key = IM.lookup key marks
+getMark (marks, _) key = IM.lookup key marks
+
+getContext :: Marks -> BS.ByteString -> Maybe ContextContent
+getContext (_, ctxMarks) key = M.lookup key ctxMarks
 
 addMark :: Marks -> IM.Key -> MarkContent -> Marks
-addMark marks key value = IM.insert key value marks
+addMark (marks, ctxMarks) key value@(hash,bName,ctx) =
+  (IM.insert key value marks, M.insert ctx (key, hash, bName) ctxMarks)
 
 listMarks :: Marks -> [(IM.Key, MarkContent)]
-listMarks = IM.assocs
+listMarks (marks, _) = IM.assocs marks
 
 lastMarkForBranch :: BS.ByteString -> Marks -> Maybe Int
 lastMarkForBranch branchToSearch = doFind 0 . listMarks where
@@ -35,22 +43,27 @@ lastMarkForBranch branchToSearch = doFind 0 . listMarks where
       then doFind (if mark > n then mark else n) ms
       else doFind n ms
 
--- TODO: This is no doubt slow. Use 2 maps for faster lookup?
 findMarkForCtx :: String -> Marks -> Maybe Int
-findMarkForCtx = findMarkForCtx' . BS.pack where
-  findMarkForCtx' ctx = fmap fst . find (\(_, (_,_,c)) -> c == ctx) . listMarks
+findMarkForCtx s m = (\(mark,_,_) -> mark) `fmap` getContext m (BS.pack s)
+
+-- TODO: This is no doubt slow. Use 2 maps for faster lookup?
+-- findMarkForCtx :: String -> Marks -> Maybe Int
+-- findMarkForCtx = findMarkForCtx' . BS.pack where
+--   findMarkForCtx' ctx = fmap fst . find (\(_, (_,_,c)) -> c == ctx) . listMarks
 
 readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
-                 return $ foldl merge IM.empty lines
+                 return $ foldl merge (IM.empty, M.empty) lines
                `catch` \_ -> return emptyMarks
-  where merge set line = case BS.split ':' line of
+  where merge set@(marksSet, ctxSet) line = case BS.split ':' line of
           [id, hashBranchCtx] ->
             case BS.split ' ' . BS.dropWhile (== ' ') $ hashBranchCtx of
               [hash, branchCtx] ->
                 case BS.split ' ' . BS.dropWhile (== ' ') $ branchCtx of
                   [branch, ctx] ->
-                    IM.insert (read $ BS.unpack id) (hash, branch, ctx) set
+                    let mark = read $ BS.unpack id in
+                    ( IM.insert mark (hash, branch, ctx) marksSet
+                    , M.insert ctx (mark, hash, branch) ctxSet)
                   _ -> set
               _ -> set -- ignore, although it is maybe not such a great idea...
           _ -> set
