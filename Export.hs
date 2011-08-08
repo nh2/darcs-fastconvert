@@ -22,7 +22,7 @@ import qualified Data.ByteString.Lazy.UTF8 as BLU
 import Data.ByteString.Base64 ( encode )
 import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Numeric ( showHex )
-import Prelude hiding ( readFile )
+import Prelude hiding ( readFile, pi )
 import Printer ( renderString )
 import System.Directory ( canonicalizePath )
 import System.Random ( randomRIO )
@@ -41,9 +41,8 @@ import Darcs.Patch.Effect ( Effect )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate
                         , makePatchname )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info, hopefully )
-import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..)
-                              , joinPatches )
-import Darcs.Patch.Set ( PatchSet(..), Tagged(..), newset2FL )
+import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..) )
+import Darcs.Patch.Set ( newset2FL )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL, spanFL
                                , (:>)(..), foldlFL, reverseRL )
 import Darcs.Witnesses.Sealed ( seal2, Sealed2(..), seal , flipSeal
@@ -58,13 +57,12 @@ import Storage.Hashed.AnchoredPath( anchorPath, appendPath, floatPath
 
 import SHA1 ( sha1PS )
 
-import Debug.Trace
-
--- Name, 'from' mark current context, original patch FL, and the remaining
+-- 'from' mark, name, current context, original patch FL, and the remaining
 -- to-be-exported patches.
 data Branch p = Branch Int String String (Sealed2 (FL (PatchInfoAnd p)))
   (Sealed2 (FL (PatchInfoAnd p)))
 
+mergeTagString :: String
 mergeTagString = "TAG darcs-fastconvert merge "
 
 isAnyMergeTag :: PatchInfoAnd p x y -> Bool
@@ -81,14 +79,14 @@ isMergeBeginTag p = extractMergeID $ patchName p where
   mergeTag = mergeTagString ++ "pre-target: "
 
 isMergeSourceTag :: String -> PatchInfoAnd p x y -> Bool
-isMergeSourceTag id p = isMergeTag p $ "pre-source: " ++ id
+isMergeSourceTag mergeID p = isMergeTag p $ "pre-source: " ++ mergeID
 
 isMergeEndTag :: String -> PatchInfoAnd p x y -> Bool
-isMergeEndTag id p = isMergeTag p $ "post: " ++ id
+isMergeEndTag mergeID p = isMergeTag p $ "post: " ++ mergeID
 
 isMergeTag :: PatchInfoAnd p x y -> String -> Bool
 isMergeTag p _ | not $ isTag (info p) = False
-isMergeTag p id = (mergeTagString ++ id) `isPrefixOf` patchName p
+isMergeTag p mergeID = (mergeTagString ++ mergeID) `isPrefixOf` patchName p
 
 isProperTag :: (Effect p) => (PatchInfoAnd p) x y -> Bool
 isProperTag p = isTag (info p) && nullFL (effect p)
@@ -203,6 +201,7 @@ reset :: (BLU.ByteString -> TreeIO ()) -> Maybe Int -> String -> TreeIO ()
 reset printer mbMark branch = do
     printer . BLC.pack $ "reset refs/heads/" ++ branch
     maybe (return ()) (\m -> printer . BLC.pack $ "from :" ++ show m) mbMark
+    printer BLC.empty
 
 hashPatch :: String -> PatchInfoAnd p cX cY -> String
 hashPatch ctx = hashInfo ctx . info
@@ -229,27 +228,29 @@ dumpBranch :: forall p . (RepoPatch p) => (BLU.ByteString -> TreeIO ())
   -> (forall cX cY . PatchInfoAnd p cX cY -> Int -> String -> String -> TreeIO ())
   -> Int -> Int -> Branch p -> [Branch p] -> TreeIO (Int, Int)
 dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
-  current (Branch _ _ _ _ (Sealed2 NilFL)) bs = if null bs
-    then return (from, current)
-    else dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark
-           from current (head bs) (tail bs)
+  current (Branch bFrom bName _ _ (Sealed2 NilFL)) bs = do
+    reset printer (Just bFrom) bName
+    if null bs
+      then return (from, current)
+      else dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark
+             from current (head bs) (tail bs)
 dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
-  current (Branch bFrom bName bCtx bOrigPs (Sealed2(p:>:ps))) bs = do
-    let nextCtx = hashPatch bCtx p
+  current (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
+    let nextCtx = hashPatch bCtx bp
     cMark <- liftIO $ ctx2mark nextCtx
     case cMark of
       -- If we've seen the next context before, we want to base our patches
       -- on that context.
       Just mark ->
-        let incBranch = Branch mark bName nextCtx bOrigPs (seal2 ps) in
+        let incBranch = Branch mark bName nextCtx bOrigPs (seal2 bps) in
         dumpBranches printer existingMarks ctx2mark mark2bName mark2ctx doMark
           from current (incBranch : bs)
       Nothing -> do
         when (from /= bFrom) $ restorePristineFromMark "exportTemp" bFrom
-        apply p
-        case isMergeBeginTag p of
+        apply bp
+        case isMergeBeginTag bp of
           Just mergeID -> do
-            let mbMerged = findMergeEndTag mergeID ps
+            let mbMerged = findMergeEndTag mergeID bps
             case mbMerged of
               -- If we can't find the matching merge tag, warn, and
               -- export the patches as if there was no merge.
@@ -258,8 +259,8 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
                      , mergeID, "merge will be omitted." ]
                 dumpBranches printer existingMarks ctx2mark mark2bName mark2ctx
                   doMark bFrom current
-                  (Branch bFrom bName nextCtx bOrigPs (seal2 ps) : bs)
-              Just (Sealed mPs, Sealed2 endTag, FlippedSeal ps') -> do
+                  (Branch bFrom bName nextCtx bOrigPs (seal2 bps) : bs)
+              Just (Sealed mPs, Sealed2 endTag, FlippedSeal bps') -> do
                 let mbMergesResolutions =
                       partitionMergesAndResolutions mergeID mPs
                 case mbMergesResolutions of
@@ -271,7 +272,7 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
                          , "mergeID:", mergeID, "merge will be omitted." ]
                     dumpBranches printer existingMarks ctx2mark mark2bName
                       mark2ctx doMark bFrom current
-                      (Branch bFrom bName nextCtx bOrigPs (seal2 ps) : bs)
+                      (Branch bFrom bName nextCtx bOrigPs (seal2 bps) : bs)
                   Just (merges, Sealed2 resolutions) -> do
                     (current', mergeMarks) <-
                       dumpMergeSources bOrigPs merges current from
@@ -281,21 +282,22 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
                     -- mPs includes all merged patches, and any resolutions
                     apply mPs
                     let nextMark = current' + 1
-                        nextCtx = hashPatch (fl2Ctx nextCtx mPs) endTag
-                    dumpMergePatch nextCtx printer doMark mark2bName
+                        branchCtx = hashPatch (fl2Ctx nextCtx mPs) endTag
+                        newBranch =
+                          Branch current' bName branchCtx bOrigPs (seal2 bps')
+                    dumpMergePatch branchCtx printer doMark mark2bName
                       resolutions endTag bFrom current' mergeMarks bName
                     dumpBranches printer existingMarks ctx2mark mark2bName
-                      mark2ctx doMark current' nextMark
-                      (Branch current bName nextCtx bOrigPs (seal2 ps') : bs)
+                      mark2ctx doMark current' nextMark (newBranch : bs)
           Nothing -> do
-            if isProperTag p
-              then dumpTag printer p bFrom
-              else dumpPatch nextCtx printer doMark p bFrom current bName
-            let nextMark = next current p
+            if isProperTag bp
+              then dumpTag printer bp bFrom
+              else dumpPatch nextCtx printer doMark bp bFrom current bName
+            let nextMark = next current bp
                 fromMark = if nextMark == current then bFrom else current
             dumpBranches printer existingMarks ctx2mark mark2bName mark2ctx
               doMark fromMark nextMark
-              (Branch fromMark bName nextCtx bOrigPs (seal2 ps) : bs)
+              (Branch fromMark bName nextCtx bOrigPs (seal2 bps) : bs)
   where
     prog = printer . BLC.pack . unwords . ("progress" :)
     -- TODO: this sucks, we know that the resulting Just tuple is of this form:
@@ -306,9 +308,10 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
                 Sealed2(PatchInfoAnd p),
                 FlippedSeal(FL (PatchInfoAnd p)) z)
     findMergeEndTag _ NilFL = Nothing
-    findMergeEndTag mergeID ps = case spanFL (not . isMergeEndTag mergeID) ps of
-      _ :> NilFL             -> Nothing
-      merged :> (t :>: rest) -> Just (seal merged, seal2 t, flipSeal rest)
+    findMergeEndTag mergeID ps =
+      case spanFL (not . isMergeEndTag mergeID) ps of
+        _ :> NilFL             -> Nothing
+        merged :> (t :>: rest) -> Just (seal merged, seal2 t, flipSeal rest)
 
     -- The input FL should be of the form:
     -- {P1_1,P1_2,T1,P2_1,P2_2,T2,[...],R1,R2} where each Ti is a merge-source
@@ -333,29 +336,29 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
     dumpMergeSources :: (RepoPatch p) => Sealed2(FL (PatchInfoAnd p))
       -> [(Sealed2(FL (PatchInfoAnd p)), Sealed2(PatchInfoAnd p))] -> Int
       -> Int -> TreeIO (Int, [Int])
-    dumpMergeSources _ [] current from = return (current, [])
-    dumpMergeSources targetPs ((sealedPs@(Sealed2 ps), Sealed2 tag) : bs)
-      current from = do
+    dumpMergeSources _ [] cur _ = return (cur, [])
+    dumpMergeSources targetPs ((sealedPs@(Sealed2 ps), Sealed2 tag) : sources)
+      cur fr = do
       let dependencyPIs = reverse . getdeps . hopefully $ tag
           newPIs = mapFL info ps
           ctxPIs = dependencyPIs \\ newPIs
       tempBranchName <- liftIO $
         flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
-      (contextMark, current') <-
-        checkOrDumpPatches tempBranchName ctxPIs targetPs current from
+      (contextMark, cur') <-
+        checkOrDumpPatches tempBranchName ctxPIs targetPs cur fr
       -- TODO: here, do we need to commute other patches from the contexts out,
       -- so we don't output conflicting changes that have no effect?
-      (sourceMark, current'') <-
-        checkOrDumpPatches tempBranchName dependencyPIs sealedPs current'
+      (sourceMark, cur'') <-
+        checkOrDumpPatches tempBranchName dependencyPIs sealedPs cur'
           contextMark
-      (current''', otherMarks) <-
-        dumpMergeSources targetPs bs current'' sourceMark
-      return (current''', sourceMark : otherMarks)
+      (cur''', otherMarks) <-
+        dumpMergeSources targetPs sources cur'' sourceMark
+      return (cur''', sourceMark : otherMarks)
 
-    checkOrDumpPatches branchName pis targetPs current from = do
+    checkOrDumpPatches branchName pis targetPs cur fr = do
       contextAlreadyExported <- findMostRecentStateFromCtx pis
       case contextAlreadyExported of
-        Right exportMark -> return (exportMark, current)
+        Right exportMark -> return (exportMark, cur)
         -- The entire merged-branch hasn't already been exported, we export the
         -- patches on a randomly-named branch. Had the branch been available
         -- for export, it would have been exported due to our sorting in
@@ -366,10 +369,10 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
             Nothing -> die "Couldn't commute out context patches for merge."
             Just (Sealed2 ctxPs) -> do
               let fooBranchPs = seal2 ctxPs
-                  fooBranch = Branch latestMark latestCtx branchName
+                  fooBranch = Branch latestMark branchName latestCtx
                     fooBranchPs fooBranchPs
               dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx
-                doMark from current fooBranch []
+                doMark fr cur fooBranch []
 
     getPatchesFromPatchInfos :: [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
       -> Maybe(Sealed2(FL (PatchInfoAnd p)))
@@ -399,10 +402,9 @@ dumpBranch printer existingMarks ctx2mark mark2bName mark2ctx doMark from
       let newCtx = hashInfo ctx pi
       mbCtxMark <- liftIO $ ctx2mark newCtx
       case mbCtxMark of
-        Just m -> findMostRecentStateFromCtx' newCtx pis
+        Just _ -> findMostRecentStateFromCtx' newCtx pis
         Nothing -> do
-          ctxMark <- liftIO $
-            fromJust `fmap` ctx2mark ctx
+          ctxMark <- liftIO $ fromJust `fmap` ctx2mark ctx
           return $ Left (ctx, ctxMark, infos)
 
 -- |tryTakeUntilFL will attempt to take items from an FL, up-to and
@@ -442,6 +444,7 @@ dumpMergePatch ctx printer doMark mark2bName resolutions mergeTag from current
        \m -> dumpBits printer [ BLU.fromString $ "merge :" ++ show m]
      let touchedFiles = nub . concat $ mapFL listTouchedFiles resolutions
      dumpFiles printer $ map floatPath touchedFiles
+     printer BLC.empty
 
 fl2Ctx :: String -> FL (PatchInfoAnd p) x y -> String
 fl2Ctx = foldlFL hashPatch
@@ -523,9 +526,10 @@ fastExport' repo printer bs marks = do
   them <- forM bs readBranchRepo
   let sealedPs = seal2 patches
       masterBranch = Branch 0 "master" emptyContext sealedPs sealedPs
-      bs = masterBranch : them
+      branches = masterBranch : them
       dumper =
-        dumpBranches printer marks ctx2mark mark2bName mark2ctx doMark 0 1 bs
+        dumpBranches printer marks ctx2mark mark2bName mark2ctx doMark 0 1
+          branches
   hashedTreeIO dumper emptyTree "_darcs/pristine.hashed"
   readIORef marksref
  `finally` do

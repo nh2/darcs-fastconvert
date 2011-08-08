@@ -2,7 +2,6 @@ module Marks where
 
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
-import Data.List ( find )
 import qualified Data.ByteString.Char8 as BS
 import Prelude hiding ( id, lines )
 import System.Directory( removeFile )
