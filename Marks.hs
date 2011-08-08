@@ -46,11 +46,6 @@ lastMarkForBranch branchToSearch = doFind 0 . listMarks where
 findMarkForCtx :: String -> Marks -> Maybe Int
 findMarkForCtx s m = (\(mark,_,_) -> mark) `fmap` getContext m (BS.pack s)
 
--- TODO: This is no doubt slow. Use 2 maps for faster lookup?
--- findMarkForCtx :: String -> Marks -> Maybe Int
--- findMarkForCtx = findMarkForCtx' . BS.pack where
---   findMarkForCtx' ctx = fmap fst . find (\(_, (_,_,c)) -> c == ctx) . listMarks
-
 readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
                  return $ foldl merge (IM.empty, M.empty) lines
@@ -58,13 +53,10 @@ readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
   where merge set@(marksSet, ctxSet) line = case BS.split ':' line of
           [id, hashBranchCtx] ->
             case BS.split ' ' . BS.dropWhile (== ' ') $ hashBranchCtx of
-              [hash, branchCtx] ->
-                case BS.split ' ' . BS.dropWhile (== ' ') $ branchCtx of
-                  [branch, ctx] ->
-                    let mark = read $ BS.unpack id in
-                    ( IM.insert mark (hash, branch, ctx) marksSet
-                    , M.insert ctx (mark, hash, branch) ctxSet)
-                  _ -> set
+              [hash, branch, ctx] ->
+                let mark = read $ BS.unpack id in
+                ( IM.insert mark (hash, branch, ctx) marksSet
+                , M.insert ctx (mark, hash, branch) ctxSet)
               _ -> set -- ignore, although it is maybe not such a great idea...
           _ -> set
 

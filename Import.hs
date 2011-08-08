@@ -636,7 +636,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             Nothing -> return ()
             Just n -> case getMark marks n of
               Nothing -> liftIO $ modifyIORef marksref $
-                \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch, BC.pack "TODO: Does this matter?")
+                \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch, BC.pack "-")
               Just (n', _, _) -> die $ "Mark already exists: " ++ BC.unpack n'
           let doTag randStr = addtag "" dummyAuthor
                                (BC.pack $ "darcs-fastconvert merge post: "
