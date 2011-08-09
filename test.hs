@@ -37,9 +37,10 @@ runtest' (ShellTest _ _ dp) srcdir =
      setenv "EMAIL" "tester"
      getenv "PATH" >>= setenv "PATH" . ((takeDirectory dp ++ ":") ++)
      setenv "DARCS" dp
+     mkdir ".darcs"
+     writefile ".darcs/defaults" "ALL ignore-times"
 -- Warning:  A do-notation statement discarded a result of type String.
      _ <- Shellish.run "bash" [ "test" ]
-     writefile ".darcs/defaults" "ALL ignore-times"
      return Success
    `catch_sh` \e -> case e of
       RunFailed _ 200 _ -> return Skipped
