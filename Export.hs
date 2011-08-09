@@ -250,13 +250,13 @@ hashInfo ctx = sha1PS . BC.pack . (ctx ++) . makePatchname
 
 dumpBranch :: forall p . (RepoPatch p) => Branch p -> [Branch p] -> ExportM ()
 dumpBranch (Branch bFrom bName _ _ (Sealed2 NilFL)) bs = do
+    -- Reset, so branch heads are up-to-date at the end of the export.
     reset (Just bFrom) bName
     unless (null bs) $ dumpBranch (head bs) (tail bs)
 dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
     let nextCtx = hashPatch bCtx bp
-    ctxToMark <- asks ctx2mark
-    cMark <- ctxToMark nextCtx
-    let incBranch = \m -> Branch m bName nextCtx bOrigPs (seal2 bps) 
+        incBranch m = Branch m bName nextCtx bOrigPs (seal2 bps)
+    cMark <- asks ctx2mark >>= \c -> c nextCtx
     case cMark of
       -- If we've seen the next context before, we want to base our patches
       -- on that context.
@@ -265,6 +265,8 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
         from <- gets lastExportedMark
         when (from /= bFrom) $ do
           lift $ restorePristineFromMark "exportTemp" bFrom
+          -- Ensure any exported patches are based on the *branches* previous
+          -- commit, not the globally previous commit.
           modify (\s -> s {lastExportedMark = bFrom})
         lift $ apply bp
         case isMergeBeginTag bp of
@@ -299,8 +301,7 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                     -- mPs includes all merged patches, and any resolutions
                     lift $ apply mPs
                     let branchCtx = hashPatch (fl2Ctx nextCtx mPs) endTag
-                    dumpMergePatch branchCtx resolutions endTag mergeMarks
-                      bName
+                    dumpMergePatch branchCtx resolutions endTag mergeMarks bName
                     newFrom <- gets lastExportedMark
                     let newBranch =
                           Branch newFrom bName branchCtx bOrigPs (seal2 bps')
