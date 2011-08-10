@@ -46,7 +46,7 @@ import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info, hopefully )
 import Darcs.Patch.Prim.Class ( PrimOf, primIsTokReplace, PrimClassify(..) )
 import Darcs.Patch.Set ( newset2FL )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL, spanFL
-                               , (:>)(..), foldlFL, reverseRL )
+                               , (:>)(..), foldlFL, reverseRL, lengthFL )
 import Darcs.Witnesses.Sealed ( seal2, Sealed2(..), seal , flipSeal
                               , Sealed(..), FlippedSeal(..) )
 import Darcs.Utils ( withCurrentDirectory )
@@ -462,8 +462,16 @@ dumpMergePatch :: (RepoPatch p) => String -> FL (PatchInfoAnd p) cX cY
   -> PatchInfoAnd p cA cB -> [Int] -> String -> ExportM Int
 dumpMergePatch ctx resolutions mergeTag merges bName = do
   markToBName <- asks mark2bName
-  bNames <- (intercalate "," . map fromJust) `fmap` mapM markToBName merges
-  let message = BLC.pack $ "Merge in branches: " ++ bNames
+  let resolutionCount = lengthFL resolutions
+      headMessage = case resolutions of
+        NilFL -> ""
+        (p :>: _) -> piName $ info p
+  message <- if resolutionCount == 1 && "Merge" `isPrefixOf` headMessage
+               then return $ BLC.pack headMessage
+               else do
+                 bNames <- (intercalate "," . map fromJust)
+                   `fmap` mapM markToBName merges
+                 return $ BLC.pack $ "Merge in branches: " ++ bNames
   from <- gets lastExportedMark
   mark <- gets nextMark
   stashPristineAtMark mark
