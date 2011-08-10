@@ -49,6 +49,7 @@ import Darcs.Witnesses.Ordered ( FL(..), RL(..), nullFL, mapFL, spanFL
                                , (:>)(..), foldlFL, reverseRL, lengthFL )
 import Darcs.Witnesses.Sealed ( seal2, Sealed2(..), seal , flipSeal
                               , Sealed(..), FlippedSeal(..) )
+import Darcs.Witnesses.Unsafe ( unsafeCoercePStart )
 import Darcs.Utils ( withCurrentDirectory )
 
 import Storage.Hashed.Darcs
@@ -264,8 +265,9 @@ dumpBranch (Branch bFrom bName _ _ (Sealed2 NilFL)) bs = do
     reset (Just bFrom) bName
     unless (null bs) $ dumpBranch (head bs) (tail bs)
 
-dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
-    let incBranch m = Branch m bName bCtx bOrigPs (seal2 bps)
+dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
+  do
+    let incBranch m = Branch m bName bCtx (seal2 bOrigPs) (seal2 bps)
     ctxToMark <- asks ctx2mark
     from <- gets lastExportedMark
     when (from /= bFrom) $ restoreBranch bFrom
@@ -288,11 +290,16 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                 -- without the merge.
                 Nothing -> do
                   progressWarn [ "could not find merge source tag(s) with"
-                               , "mergeID:", mergeID, "merge will be omitted." ]
+                               , "mergeID:", mergeID, "merge will be omitted."]
                   dumpBranches $ incBranch bFrom : bs
                 Just (merges, Sealed2 resolutions) -> do
                   currentFrom <- gets lastExportedMark
-                  mergeMarks <- dumpMergeSources bOrigPs merges
+                  let mergeTagInfo = info bp
+                  -- We can safely use fromJust since we know the tag is
+                  -- present as we have already hit it.
+                  (Sealed origPsUpToMerge) <- return . fromJust $
+                        tryTakeUntilFL ((== mergeTagInfo) . info) bOrigPs
+                  mergeMarks <- dumpMergeSources (seal2 origPsUpToMerge) merges
                   -- Reset our current state since it could have been changed
                   -- if some merge sources hadn't been exported.
                   lift $ restorePristineFromMark "exportTemp" bFrom
@@ -306,8 +313,9 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                   -- Only dump the merge patch if it hasn't been already.
                   -- Otherwise, stash the pristine and update the last mark.
                   newFrom <- maybe dumpMergeP stashUpdateLastMark mbCtxMark
-                  dumpBranches $
-                    Branch newFrom bName branchCtx bOrigPs (seal2 bps') : bs
+                  let newBranch = Branch newFrom bName branchCtx
+                        (seal2 bOrigPs) (seal2 bps')
+                  dumpBranches $ newBranch : bs
         Nothing -> do
           unless (isAnyMergeTag bp) $ dumpTag bp
           dumpBranches $ incBranch bFrom : bs
@@ -316,11 +324,13 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
             patchDumper = dumpPatch nextCtx bp bName
         mbCtxMark <- ctxToMark nextCtx
         newFrom <- maybe patchDumper stashUpdateLastMark mbCtxMark
-        dumpBranches (Branch newFrom bName nextCtx bOrigPs (seal2 bps) : bs)
+        dumpBranches (Branch newFrom bName nextCtx (seal2 bOrigPs) (seal2 bps) : bs)
   where
     progressWarn ws = asks printer >>=
       \p -> p . BLC.pack . unwords . ("progress WARNING:" :) $ ws
 
+    -- |stashUpdateLastMark stashes the current pristine for the given mark,
+    -- and updates the state, setting the last exported mark as the given mark.
     stashUpdateLastMark m = do
       stashPristineAtMark m
       modify (\s -> s { lastExportedMark = m })
@@ -366,18 +376,56 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
       -> [(Sealed2(FL (PatchInfoAnd p)), Sealed2(PatchInfoAnd p))]
       -> ExportM [Int]
     dumpMergeSources _ [] = return []
-    dumpMergeSources targetPs ((sealedPs@(Sealed2 ps), Sealed2 tag) : ss) = do
+    dumpMergeSources targetPs ((Sealed2 ps, Sealed2 tag) : ss) = do
       let dependencyPIs = reverse . getdeps . hopefully $ tag
           newPIs = mapFL info ps
           ctxPIs = dependencyPIs \\ newPIs
       tempBranchName <- liftIO $
         flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
       checkOrDumpPatches tempBranchName ctxPIs targetPs
-      -- TODO: here, do we need to commute other patches from the contexts out,
-      -- so we don't output conflicting changes that have no effect?
-      sourceMark <- checkOrDumpPatches tempBranchName dependencyPIs sealedPs
+      let targetPsList = flToList targetPs
+          mbOriginalPatches = commuteOutNonDeps targetPsList newPIs ps
+      branchOriginalPatches <- case mbOriginalPatches of
+               Just x -> return x
+               Nothing -> die $ "Couldn't commute merged patches back into "
+                                 ++ "their original form."
+      sourceMark <-
+        checkOrDumpPatches tempBranchName dependencyPIs branchOriginalPatches
       others <- dumpMergeSources targetPs ss
       return $ sourceMark : others
+
+    flToList :: Sealed2(FL (PatchInfoAnd p)) -> [Sealed2 (PatchInfoAnd p)]
+    flToList (Sealed2 NilFL) = []
+    flToList (Sealed2 (p :>: ps)) = seal2 p : flToList (seal2 ps)
+
+    -- |commuteListPastFL takes a list of individual patches and a FL of
+    -- patches and attempts to commute each individual patch past the FL.
+    commuteListPastFL :: [Sealed2(PatchInfoAnd p)] -> FL (PatchInfoAnd p) cC cD
+      -> Maybe(Sealed2(FL (PatchInfoAnd p)))
+    commuteListPastFL [] ps = Just $ seal2 ps
+    commuteListPastFL (Sealed2 x : xs) ps =
+      case commuteFL (x :> unsafeCoercePStart ps) of
+        Just (ps' :> _) -> commuteListPastFL xs ps'
+        Nothing -> Nothing
+
+    -- |commuteOutNonDeps takes a FL of patches representing the merge target,
+    -- a list of infos corresponding to the context of the merged patches and
+    -- a FL of merged patches. Any patches from the merge target that are not
+    -- in the context of the merged patches need to be commuted out
+    -- (particularly in the case of conflicts, so we can output the merged-in
+    -- patches in their original form).
+    commuteOutNonDeps :: [Sealed2(PatchInfoAnd p)] -> [PatchInfo]
+      -> FL (PatchInfoAnd p) cC cD -> Maybe(Sealed2(FL (PatchInfoAnd p)))
+    commuteOutNonDeps [] [] mergedPatches = Just $ seal2 mergedPatches
+    commuteOutNonDeps ps [] mergedPatches = commuteListPastFL ps mergedPatches
+    -- There were PatchInfos that we didn't find, to commute out, so fail.
+    commuteOutNonDeps [] _ _ = Nothing
+    commuteOutNonDeps (Sealed2 p : ss) (pi : pis) mergedPatches =
+      if info p == pi
+        then commuteOutNonDeps ss pis mergedPatches
+        else case commuteFL (p :> unsafeCoercePStart mergedPatches) of
+          Just (mergedPatches' :> _) -> commuteOutNonDeps ss pis mergedPatches'
+          Nothing -> Nothing
 
     -- |checkOrDumpPatches ensures that a given list of PatchInfos are dumped,
     -- either now, or previously.
@@ -392,7 +440,7 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
         -- for export, it would have been exported due to our sorting in
         -- dumpBranches.
         Left (latestCtx, latestMark, remainingPIs) -> do
-          let mbCtxPs = getPatchesFromPatchInfos remainingPIs targetPs
+          let mbCtxPs = extractPatchesByPatchInfos remainingPIs targetPs
           case mbCtxPs of
             Nothing -> die "Couldn't commute out context patches for merge."
             Just (Sealed2 ctxPs) -> do
@@ -403,28 +451,28 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
               -- Return the last exported mark
               gets lastExportedMark
 
-    -- getPatchesFromPatchInfos attempts to retrieve a list of patches
+    -- extractPatchesByPatchInfos attempts to retrieve a list of patches
     -- described by their PatchInfos from a given FL of patches, returning
     -- Nothing if the patches cannot be extracted.
-    getPatchesFromPatchInfos :: [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
+    extractPatchesByPatchInfos :: [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
       -> Maybe(Sealed2(FL (PatchInfoAnd p)))
-    getPatchesFromPatchInfos [] _    = Just $ seal2 NilFL
-    getPatchesFromPatchInfos _ (Sealed2 NilFL) = Nothing
-    getPatchesFromPatchInfos pis (Sealed2 ps) =
+    extractPatchesByPatchInfos [] _    = Just $ seal2 NilFL
+    extractPatchesByPatchInfos _ (Sealed2 NilFL) = Nothing
+    extractPatchesByPatchInfos pis (Sealed2 ps) =
       let finalInfo = last pis in
           -- Obtain the FL 'as far as' the last patch we require.
       tryTakeUntilFL ((== finalInfo) . info) ps
-        >>= \(Sealed ps') -> getPatchesFromPatchInfos' NilRL pis ps'
+        >>= \(Sealed ps') -> extractPatchesByPatchInfos' NilRL pis ps'
 
-    getPatchesFromPatchInfos' :: RL (PatchInfoAnd p) cX cY -> [PatchInfo]
+    extractPatchesByPatchInfos' :: RL (PatchInfoAnd p) cX cY -> [PatchInfo]
       -> FL (PatchInfoAnd p) cY cZ -> Maybe(Sealed2(FL (PatchInfoAnd p)))
-    getPatchesFromPatchInfos' ack [] _  = Just . seal2 . reverseRL $ ack
-    getPatchesFromPatchInfos' _ _ NilFL = Nothing
-    getPatchesFromPatchInfos' ack iss@(i:is) (p :>: ps) =
+    extractPatchesByPatchInfos' ack [] _  = Just . seal2 . reverseRL $ ack
+    extractPatchesByPatchInfos' _ _ NilFL = Nothing
+    extractPatchesByPatchInfos' ack iss@(i:is) (p :>: ps) =
       if i == info p
-        then getPatchesFromPatchInfos' (p :<: ack) is ps
+        then extractPatchesByPatchInfos' (p :<: ack) is ps
         else case commuteFL (p :> ps) of
-               Just (ps' :> _) -> getPatchesFromPatchInfos' ack iss ps'
+               Just (ps' :> _) -> extractPatchesByPatchInfos' ack iss ps'
                Nothing -> Nothing
 
     -- |findMostRecentMarkFromCtx returns the most recent mark from a list of
