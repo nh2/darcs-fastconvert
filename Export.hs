@@ -471,7 +471,10 @@ dumpMergePatch ctx resolutions mergeTag merges bName = do
                else do
                  bNames <- (intercalate "," . map fromJust)
                    `fmap` mapM markToBName merges
-                 return $ BLC.pack $ "Merge in branches: " ++ bNames
+                 let resMessages = unlines $
+                       bNames : mapFL (piName . info) resolutions
+                     msg = "Merge in branches: " ++ resMessages
+                 return $ BLC.pack msg
   from <- gets lastExportedMark
   mark <- gets nextMark
   stashPristineAtMark mark
