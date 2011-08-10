@@ -528,7 +528,7 @@ dumpMergePatch ctx resolutions mergeTag merges bName = do
   stashPristineAtMark mark
   modify (\s -> s {lastExportedMark = mark, nextMark = mark + 1})
   dumpBits [ BLC.pack ("progress " ++ show mark ++ ": ")
-              `BLC.append` message
+              `BLC.append` (head . BLC.lines $ message)
            , BLC.pack $ "commit refs/heads/" ++ bName ]
   asks marker >>= \m -> m mergeTag mark bName ctx
   let committer =
