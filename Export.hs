@@ -68,10 +68,10 @@ data ExportState = ExportState { lastExportedMark :: Int
                                , nextMark :: Int
                                }
 
-data ExportReader = 
+data ExportReader =
   ExportReader { ctx2mark :: String -> ExportM (Maybe Int)
                , mark2bName :: Int -> ExportM (Maybe String)
-               , marker :: forall p x y . (PatchInfoAnd p) x y -> Int 
+               , marker :: forall p x y . (PatchInfoAnd p) x y -> Int
                             -> String -> String -> ExportM ()
                , printer :: BLU.ByteString -> ExportM ()
                , existingMarks :: Marks
@@ -196,21 +196,22 @@ generateInfoIgnores p =
           base64ps = encode . BC.concat . BLC.toChunks $ gzipped
 
 dumpPatch :: (RepoPatch p) => String -> (PatchInfoAnd p) cX cY -> String
-  -> ExportM ()
+  -> ExportM Int
 dumpPatch ctx p bName = do
   from <- gets lastExportedMark
   mark <- incrementMark p
+  stashPristineAtMark mark
   dumpBits [ BLC.pack $ "progress " ++ show mark ++ ": " ++ patchName p
               , BLC.pack $ "commit refs/heads/" ++ bName ]
   let message = patchMessage p `BL.append` generateInfoIgnores p
   asks marker >>= \m -> m p mark bName ctx
-  lift $ stashPristine (Just mark) Nothing
   dumpBits
      [ BLU.fromString $ "committer " ++ patchAuthor p ++ " " ++ patchDate p
      , BLU.fromString $ "data " ++ show (BL.length message + 1)
      , message ]
   when (mark > 1) $ dumpBits [ BLU.fromString $ "from :" ++ show from]
   dumpFiles . map floatPath $ listTouchedFiles p
+  return mark
 
 dumpTag :: (PatchInfoAnd p) cX cY -> ExportM ()
 dumpTag p | isAnyMergeTag p = return ()
@@ -232,7 +233,10 @@ reset mbMark branch = do
     doPrint BLC.empty
 
 hashPatch :: String -> PatchInfoAnd p cX cY -> String
-hashPatch ctx = hashInfo ctx . info
+hashPatch ctx p = let pInfo = info p in
+  if isTag pInfo
+    then ctx
+    else hashInfo ctx pInfo
 
 hashInfo :: String -> PatchInfo -> String
 hashInfo ctx = sha1PS . BC.pack . (ctx ++) . makePatchname
@@ -247,75 +251,81 @@ hashInfo ctx = sha1PS . BC.pack . (ctx ++) . makePatchname
 --                           , show (getMark existingMarks current), ", got "
 --                           , BC.unpack (patchHash p)]
 
+restoreBranch :: Int -> ExportM ()
+restoreBranch bFrom = do
+  lift $ restorePristineFromMark "exportTemp" bFrom
+  -- Ensure any exported patches are based on the *branch's* previous
+  -- commit, not the globally previous commit.
+  modify (\s -> s {lastExportedMark = bFrom})
 
 dumpBranch :: forall p . (RepoPatch p) => Branch p -> [Branch p] -> ExportM ()
 dumpBranch (Branch bFrom bName _ _ (Sealed2 NilFL)) bs = do
     -- Reset, so branch heads are up-to-date at the end of the export.
     reset (Just bFrom) bName
     unless (null bs) $ dumpBranch (head bs) (tail bs)
+
 dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
-    let nextCtx = hashPatch bCtx bp
-        incBranch m = Branch m bName nextCtx bOrigPs (seal2 bps)
-    cMark <- asks ctx2mark >>= \c -> c nextCtx
-    case cMark of
-      -- If we've seen the next context before, we want to base our patches
-      -- on that context.
-      Just mark -> dumpBranches (incBranch mark : bs)
-      Nothing -> do
-        from <- gets lastExportedMark
-        when (from /= bFrom) $ do
-          lift $ restorePristineFromMark "exportTemp" bFrom
-          -- Ensure any exported patches are based on the *branches* previous
-          -- commit, not the globally previous commit.
-          modify (\s -> s {lastExportedMark = bFrom})
-        lift $ apply bp
-        case isMergeBeginTag bp of
-          Just mergeID -> do
-            let mbMerged = findMergeEndTag mergeID bps
-            case mbMerged of
-              -- If we can't find the matching merge tag, warn, and
-              -- export the patches as if there was no merge.
-              Nothing -> do
-                progressWarn [ "could not find merge end tag with mergeID:"
-                             , mergeID, "merge will be omitted." ]
-                dumpBranches $ incBranch bFrom : bs
-              Just (Sealed mPs, Sealed2 endTag, FlippedSeal bps') -> do
-                let mbMergesResolutions =
-                      partitionMergesAndResolutions mergeID mPs
-                case mbMergesResolutions of
-                  -- If we can't find any source tags, we can't recreate the
-                  -- pre-merge context, so warn, and export the remaining
-                  -- patches without the merge.
-                  Nothing -> do
-                    progressWarn [ "could not find merge source tag(s) with"
-                                 , "mergeID:", mergeID
-                                 , "merge will be omitted." ]
-                    dumpBranches $ incBranch bFrom : bs
-                  Just (merges, Sealed2 resolutions) -> do
-                    currentFrom <- gets lastExportedMark
-                    mergeMarks <- dumpMergeSources bOrigPs merges
-                    -- Reset our current state since it could have been changed
-                    -- if some merge sources hadn't been exported.
-                    lift $ restorePristineFromMark "exportTemp" bFrom
-                    modify (\s -> s {lastExportedMark = currentFrom})
-                    -- mPs includes all merged patches, and any resolutions
-                    lift $ apply mPs
-                    let branchCtx = hashPatch (fl2Ctx nextCtx mPs) endTag
-                    dumpMergePatch branchCtx resolutions endTag mergeMarks bName
-                    newFrom <- gets lastExportedMark
-                    let newBranch =
-                          Branch newFrom bName branchCtx bOrigPs (seal2 bps')
-                    dumpBranches $ newBranch : bs
-          Nothing -> do
-            if isProperTag bp
-              then dumpTag bp
-              else dumpPatch nextCtx bp bName
-            newFrom <- gets lastExportedMark
-            let newBranch = Branch newFrom bName nextCtx bOrigPs (seal2 bps)
-            dumpBranches $ newBranch : bs
+    let incBranch m = Branch m bName bCtx bOrigPs (seal2 bps)
+    ctxToMark <- asks ctx2mark
+    from <- gets lastExportedMark
+    when (from /= bFrom) $ restoreBranch bFrom
+    lift $ apply bp
+    if isProperTag bp
+      then case isMergeBeginTag bp of
+        Just mergeID -> do
+          let mbMerged = findMergeEndTag mergeID bps
+          case mbMerged of
+            -- If we can't find the matching merge tag, warn, and export the
+            -- patches as if there was no merge.
+            Nothing -> do
+              progressWarn [ "could not find merge end tag with mergeID:"
+                           , mergeID, "merge will be omitted." ]
+              dumpBranches $ incBranch bFrom : bs
+            Just (Sealed mPs, Sealed2 endTag, FlippedSeal bps') ->
+              case partitionMergesAndResolutions mergeID mPs of
+                -- If we can't find any source tags, we can't recreate the
+                -- pre-merge context, so warn, and export the remaining patches
+                -- without the merge.
+                Nothing -> do
+                  progressWarn [ "could not find merge source tag(s) with"
+                               , "mergeID:", mergeID, "merge will be omitted." ]
+                  dumpBranches $ incBranch bFrom : bs
+                Just (merges, Sealed2 resolutions) -> do
+                  currentFrom <- gets lastExportedMark
+                  mergeMarks <- dumpMergeSources bOrigPs merges
+                  -- Reset our current state since it could have been changed
+                  -- if some merge sources hadn't been exported.
+                  lift $ restorePristineFromMark "exportTemp" bFrom
+                  modify (\s -> s {lastExportedMark = currentFrom})
+                  -- mPs includes all merged patches, and any resolutions
+                  lift $ apply mPs
+                  let branchCtx = fl2Ctx bCtx mPs
+                      dumpMergeP = dumpMergePatch branchCtx resolutions endTag
+                                     mergeMarks bName
+                  mbCtxMark <- ctxToMark branchCtx
+                  -- Only dump the merge patch if it hasn't been already.
+                  -- Otherwise, stash the pristine and update the last mark.
+                  newFrom <- maybe dumpMergeP stashUpdateLastMark mbCtxMark
+                  dumpBranches $
+                    Branch newFrom bName branchCtx bOrigPs (seal2 bps') : bs
+        Nothing -> do
+          unless (isAnyMergeTag bp) $ dumpTag bp
+          dumpBranches $ incBranch bFrom : bs
+      else do
+        let nextCtx = hashPatch bCtx bp
+            patchDumper = dumpPatch nextCtx bp bName
+        mbCtxMark <- ctxToMark nextCtx
+        newFrom <- maybe patchDumper stashUpdateLastMark mbCtxMark
+        dumpBranches (Branch newFrom bName nextCtx bOrigPs (seal2 bps) : bs)
   where
-    progressWarn ws = asks printer >>= 
+    progressWarn ws = asks printer >>=
       \p -> p . BLC.pack . unwords . ("progress WARNING:" :) $ ws
+
+    stashUpdateLastMark m = do
+      stashPristineAtMark m
+      modify (\s -> s { lastExportedMark = m })
+      return m
+
     -- TODO: this sucks, we know that the resulting Just tuple is of this form:
     -- (FL (PIAP p) a b, PIAP p b c, FL (PIAP p) c d) but I don't think I can
     -- prove it...
@@ -370,7 +380,7 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
     checkOrDumpPatches :: String -> [PatchInfo]
       -> Sealed2(FL (PatchInfoAnd p)) -> ExportM ()
     checkOrDumpPatches branchName pis targetPs = do
-      contextAlreadyExported <- findMostRecentStateFromCtx pis
+      contextAlreadyExported <- findMostRecentMarkFromCtx pis
       case contextAlreadyExported of
         Right _ -> return ()
         -- The entire merged-branch hasn't already been exported, we export the
@@ -408,16 +418,16 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                Just (ps' :> _) -> getPatchesFromPatchInfos' ack iss ps'
                Nothing -> Nothing
 
-    findMostRecentStateFromCtx = findMostRecentStateFromCtx' ""
-    findMostRecentStateFromCtx' ctx [] = do
+    findMostRecentMarkFromCtx = findMostRecentMarkFromCtx' ""
+    findMostRecentMarkFromCtx' ctx [] = do
       ctxToMark <- asks ctx2mark
       (Right . fromJust) `fmap` ctxToMark ctx
-    findMostRecentStateFromCtx' ctx infos@(pi:pis) = do
+    findMostRecentMarkFromCtx' ctx infos@(pi:pis) = do
       ctxToMark <- asks ctx2mark
       let newCtx = hashInfo ctx pi
       mbCtxMark <- ctxToMark newCtx
       case mbCtxMark of
-        Just _ -> findMostRecentStateFromCtx' newCtx pis
+        Just _ -> findMostRecentMarkFromCtx' newCtx pis
         Nothing -> do
           ctxMark <- fromJust `fmap` ctxToMark ctx
           return $ Left (ctx, ctxMark, infos)
@@ -435,19 +445,19 @@ tryTakeUntilFL' acc f (x :>: _) | f x = Just . seal . reverseRL $ x :<: acc
 tryTakeUntilFL' acc f (x :>: xs) = tryTakeUntilFL' (x :<: acc) f xs
 
 dumpMergePatch :: (RepoPatch p) => String -> FL (PatchInfoAnd p) cX cY
-  -> PatchInfoAnd p cA cB -> [Int] -> String -> ExportM ()
+  -> PatchInfoAnd p cA cB -> [Int] -> String -> ExportM Int
 dumpMergePatch ctx resolutions mergeTag merges bName = do
   markToBName <- asks mark2bName
   bNames <- (intercalate "," . map fromJust) `fmap` mapM markToBName merges
   let message = BLC.pack $ "Merge in branches: " ++ bNames
   from <- gets lastExportedMark
   mark <- gets nextMark
+  stashPristineAtMark mark
   modify (\s -> s {lastExportedMark = mark, nextMark = mark + 1})
   dumpBits [ BLC.pack ("progress " ++ show mark ++ ": ")
               `BLC.append` message
            , BLC.pack $ "commit refs/heads/" ++ bName ]
   asks marker >>= \m -> m mergeTag mark bName ctx
-  lift $ stashPristine (Just mark) Nothing
   let committer =
        "committer " ++ patchAuthor mergeTag ++ " " ++ patchDate mergeTag
   dumpBits
@@ -460,6 +470,7 @@ dumpMergePatch ctx resolutions mergeTag merges bName = do
   let touchedFiles = nub . concat $ mapFL listTouchedFiles resolutions
   dumpFiles $ map floatPath touchedFiles
   asks printer >>= \p -> p BLC.empty
+  return mark
 
 fl2Ctx :: String -> FL (PatchInfoAnd p) x y -> String
 fl2Ctx = foldlFL hashPatch
@@ -482,6 +493,14 @@ dumpBranches bs = dumpBranch (head sortedBranches) (tail sortedBranches)
         then mergeHeadDepth' (acc + 1) (seal2 ps)
         else acc
 
+stashPristineAtMark :: Int -> ExportM ()
+stashPristineAtMark mark = lift $ stashPristine (Just mark) Nothing
+
+go :: (RepoPatch p) => [Branch p] -> ExportM ()
+go branches = do
+  stashPristineAtMark 0
+  dumpBranches branches
+
 fastExport :: (BLU.ByteString -> ExportM ()) -> String -> [FilePath] -> Marks
   -> IO Marks
 fastExport doPrint repodir bs marks = do
@@ -496,7 +515,7 @@ fastExport' repo doPrint bs marks = do
   marksref <- newIORef marks
   let patches = newset2FL patchset
       emptyContext = ""
-      doMark :: (forall q x y . (PatchInfoAnd q) x y -> Int -> String -> String 
+      doMark :: (forall q x y . (PatchInfoAnd q) x y -> Int -> String -> String
         -> ExportM ())
       doMark p n b c = do doPrint $ BLU.fromString $ "mark :" ++ show n
                           let bn = pb2bn . parseBranch . BC.pack $
@@ -530,10 +549,10 @@ fastExport' repo doPrint bs marks = do
       masterBranch = Branch 0 "master" emptyContext sealedPs sealedPs
       branches = masterBranch : them
       prisDir = "_darcs/pristine.hashed"
-      initState = ExportState 0 1
+      initState = ExportState 0 (1 + lastMark marks)
       initReader =
         ExportReader ctxTomark markTobName doMark doPrint marks
-      dumper = fst `fmap` evalRWST (dumpBranches branches) initReader initState
+      dumper = fst `fmap` evalRWST (go branches) initReader initState
   hashedTreeIO dumper emptyTree prisDir
   readIORef marksref
  `finally` do
