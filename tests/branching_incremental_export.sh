@@ -20,4 +20,19 @@ echo 'b' > b && darcs add b && darcs rec -am 'Add b'
 
 cd ..
 darcs-fastconvert export R --read-marks=darcs_marks > export_data
-(cd git-R && git fast-import --import-marks=../git_marks < ../export_data)
+
+cd git-R
+git fast-import --import-marks=../git_marks < ../export_data
+
+git reset --hard HEAD
+orig=$(git rev-parse HEAD)
+
+[[ $(cat a) == 'a' && $(cat b) == 'b' ]]
+
+git reset --hard HEAD~1
+
+[[ $(cat a) == 'a' && ! -e b ]]
+
+git reset --hard $orig
+
+[[ $(git log --oneline | wc -l | awk '{print $1}') -eq 2 ]]
