@@ -55,7 +55,7 @@ import Darcs.Patch.Apply ( Apply(..), applyToTree )
 import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
                            , merge2FL )
 import Darcs.Patch.FileName ( fp2fn, normPath )
-import Darcs.Patch.Info ( PatchInfo, patchinfo, showPatchInfo )
+import Darcs.Patch.Info ( PatchInfo, patchinfo, showPatchInfo, piAuthor )
 import Darcs.Patch.MatchData ( patchMatch )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia, extractHash, info )
 import Darcs.Patch.Prim ( sortCoalesceFL )
@@ -123,9 +123,6 @@ instance Show (State p) where
 
 masterBranchName :: ParsedBranchName
 masterBranchName = parseBranch . BC.pack $ "refs/heads/master"
-
-dummyAuthor :: BC.ByteString
-dummyAuthor = BC.pack "Dummy Author <>"
 
 fastImport :: Bool -> Handle -> (String -> IO ()) -> String -> RepoFormat
   -> IO Marks
@@ -430,9 +427,10 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         checkForNewFile _ _ = error
           "checkForNewFile is never valid outside of a commit."
 
-        mergeIfNecessary :: Marked -> Merges -> TreeIO (Maybe String)
-        mergeIfNecessary _ [] = return Nothing
-        mergeIfNecessary currentMark merges  = do
+        mergeIfNecessary :: Marked -> Merges -> AuthorInfo ->
+          TreeIO (Maybe String)
+        mergeIfNecessary _ [] _ = return Nothing
+        mergeIfNecessary currentMark merges author = do
           randStr <- liftIO $
             flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
           let cleanup :: Int -> TreeIO ()
@@ -442,14 +440,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 restoreToMark (show m) m
                 -- Tag the source, so we know the pre-merge context of each set
                 -- of patches.
-                addtag (show m) dummyAuthor
+                addtag (show m) author
                   (BC.pack $ "darcs-fastconvert merge pre-source: " ++ randStr)
                 liftIO $ seal `fmap` readRepoUsingSpecificInventory
                   (show m ++ "tentative_hashed_inventory") repo
           liftIO $ mapM_ (doDebug . ("Merging branch: " ++) . show) merges
           (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
           restoreToMark "" (fromJust currentMark)
-          addtag "" dummyAuthor
+          addtag "" author
             (BC.pack $ "darcs-fastconvert merge pre-target: " ++ randStr)
           us <- liftIO $ readTentativeRepo repo
           us' :\/: them' <- return $ findUncommon us them
@@ -538,7 +536,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 , "previous:", show previous, "from:", show from]
               Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
             else return previous
-          mergeID <- mergeIfNecessary fromMark merges
+          mergeID <- mergeIfNecessary fromMark merges author
           (message', (Sealed2 prePatches, Sealed2 postPatches)) <-
             return $ tryParseDarcsPatches message
           let preCount = lengthRL prePatches
@@ -639,7 +637,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               Nothing -> liftIO $ modifyIORef marksref $
                 \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch, BC.pack "-")
               Just (n', _, _) -> die $ "Mark already exists: " ++ BC.unpack n'
-          let doTag randStr = addtag "" dummyAuthor
+          let authorString = piAuthor pInfo ++ " " ++ patchDate pInfo
+              doTag randStr = addtag "" (BC.pack authorString)
                                (BC.pack $ "darcs-fastconvert merge post: "
                                  ++ randStr)
           maybe (return ()) doTag mergeID
