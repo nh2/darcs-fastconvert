@@ -375,19 +375,18 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
       checkOrDumpPatches tempBranchName ctxPIs targetPs
       -- TODO: here, do we need to commute other patches from the contexts out,
       -- so we don't output conflicting changes that have no effect?
-      checkOrDumpPatches tempBranchName dependencyPIs sealedPs
-      sourceMark <- gets lastExportedMark
+      sourceMark <- checkOrDumpPatches tempBranchName dependencyPIs sealedPs
       others <- dumpMergeSources targetPs ss
       return $ sourceMark : others
 
     -- |checkOrDumpPatches ensures that a given list of PatchInfos are dumped,
     -- either now, or previously.
     checkOrDumpPatches :: String -> [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
-      -> ExportM ()
+      -> ExportM Int
     checkOrDumpPatches branchName pis targetPs = do
       contextAlreadyExported <- findMostRecentMarkFromCtx pis
       case contextAlreadyExported of
-        Right _ -> return ()
+        Right m -> return m
         -- The entire merged-branch hasn't already been exported, we export the
         -- patches on a randomly-named branch. Had the branch been available
         -- for export, it would have been exported due to our sorting in
@@ -401,6 +400,8 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                   fooBranch = Branch latestMark branchName latestCtx
                     fooBranchPs fooBranchPs
               dumpBranch fooBranch []
+              -- Return the last exported mark
+              gets lastExportedMark
 
     -- getPatchesFromPatchInfos attempts to retrieve a list of patches
     -- described by their PatchInfos from a given FL of patches, returning
