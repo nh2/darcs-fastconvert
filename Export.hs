@@ -359,6 +359,9 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
             Just (sources, rs) ->
               Just ((seal2 sourcePs, seal2 sourceTag) : sources, rs)
 
+    -- |dumpMergeSources ensures that each of a list of merge sources (a FL and
+    -- end-tag pair) have been dumped, returning a list of the marks
+    -- corresponding to the branch tips.
     dumpMergeSources :: (RepoPatch p) => Sealed2(FL (PatchInfoAnd p))
       -> [(Sealed2(FL (PatchInfoAnd p)), Sealed2(PatchInfoAnd p))]
       -> ExportM [Int]
@@ -377,8 +380,10 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
       others <- dumpMergeSources targetPs ss
       return $ sourceMark : others
 
-    checkOrDumpPatches :: String -> [PatchInfo]
-      -> Sealed2(FL (PatchInfoAnd p)) -> ExportM ()
+    -- |checkOrDumpPatches ensures that a given list of PatchInfos are dumped,
+    -- either now, or previously.
+    checkOrDumpPatches :: String -> [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
+      -> ExportM ()
     checkOrDumpPatches branchName pis targetPs = do
       contextAlreadyExported <- findMostRecentMarkFromCtx pis
       case contextAlreadyExported of
@@ -397,6 +402,9 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                     fooBranchPs fooBranchPs
               dumpBranch fooBranch []
 
+    -- getPatchesFromPatchInfos attempts to retrieve a list of patches
+    -- described by their PatchInfos from a given FL of patches, returning
+    -- Nothing if the patches cannot be extracted.
     getPatchesFromPatchInfos :: [PatchInfo] -> Sealed2(FL (PatchInfoAnd p))
       -> Maybe(Sealed2(FL (PatchInfoAnd p)))
     getPatchesFromPatchInfos [] _    = Just $ seal2 NilFL
@@ -418,6 +426,11 @@ dumpBranch (Branch bFrom bName bCtx bOrigPs (Sealed2(bp:>:bps))) bs = do
                Just (ps' :> _) -> getPatchesFromPatchInfos' ack iss ps'
                Nothing -> Nothing
 
+    -- |findMostRecentMarkFromCtx returns the most recent mark from a list of
+    -- PatchInfos. The PatchInfos are folded left-to-right into a context,
+    -- which at each step is checked for being exported already. If a context
+    -- has not been exported, we return the most recent mark, the current
+    -- context and the remaining PatchInfos.
     findMostRecentMarkFromCtx = findMostRecentMarkFromCtx' ""
     findMostRecentMarkFromCtx' ctx [] = do
       ctxToMark <- asks ctx2mark
