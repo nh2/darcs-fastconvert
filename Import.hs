@@ -132,13 +132,14 @@ fastImport :: Bool -> Handle -> (String -> IO ()) -> String -> RepoFormat
 fastImport debug inHandle printer repodir fmt =
   do when debug $ printer "Creating new repo dir."
      createDirectory repodir
-     withCurrentDirectory repodir $ do
+     realRepoPath <- canonicalizePath repodir
+     withCurrentDirectory realRepoPath $ do
        createRepository $ case fmt of
          Darcs2Format -> [UseFormat2]
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
          let initState = Toplevel Nothing masterBranchName
-         fastImport' debug repodir inHandle printer repo emptyMarks initState
+         fastImport' debug realRepoPath inHandle printer repo emptyMarks initState
 
 fastImportIncremental :: Bool -> Handle -> (String -> IO ()) -> String
   -> Marks -> IO Marks
