@@ -307,8 +307,9 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                   -- mPs includes all merged patches, and any resolutions
                   lift $ apply mPs
                   let branchCtx = fl2Ctx bCtx mPs
+                      touchedFiles = nub . concat $ mapFL listTouchedFiles mPs
                       dumpMergeP = dumpMergePatch branchCtx resolutions endTag
-                                     mergeMarks bName
+                                     mergeMarks touchedFiles bName
                   mbCtxMark <- ctxToMark branchCtx
                   -- Only dump the merge patch if it hasn't been already.
                   -- Otherwise, stash the pristine and update the last mark.
@@ -507,8 +508,8 @@ tryTakeUntilFL' acc f (x :>: _) | f x = Just . seal . reverseRL $ x :<: acc
 tryTakeUntilFL' acc f (x :>: xs) = tryTakeUntilFL' (x :<: acc) f xs
 
 dumpMergePatch :: (RepoPatch p) => String -> FL (PatchInfoAnd p) cX cY
-  -> PatchInfoAnd p cA cB -> [Int] -> String -> ExportM Int
-dumpMergePatch ctx resolutions mergeTag merges bName = do
+  -> PatchInfoAnd p cA cB -> [Int] -> [FilePath] -> String -> ExportM Int
+dumpMergePatch ctx resolutions mergeTag merges touchedFiles bName = do
   markToBName <- asks mark2bName
   let resolutionCount = lengthFL resolutions
       headMessage = case resolutions of
@@ -540,7 +541,6 @@ dumpMergePatch ctx resolutions mergeTag merges bName = do
   dumpBits [ BLU.fromString $ "from :" ++ show from]
   forM_ merges $
     \m -> dumpBits [ BLU.fromString $ "merge :" ++ show m]
-  let touchedFiles = nub . concat $ mapFL listTouchedFiles resolutions
   dumpFiles $ map floatPath touchedFiles
   asks printer >>= \p -> p BLC.empty
   return mark
