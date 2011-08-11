@@ -351,7 +351,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                BranchName bName -> restoreToBranch "" $ parseBranch bName
 
         makeinfo author message tag = do
-          let (name:log) = lines $ BC.unpack message
+          let (name, log) = case BC.unpack message of
+                "" -> ("Unnamed patch", [])
+                msg -> (\ls -> (head ls, tail ls)) . lines $ msg
               (author'', date'') = span (/='>') $ BC.unpack author
               date' = dropWhile (`notElem` "0123456789") date''
               author' = author'' ++ ">"
