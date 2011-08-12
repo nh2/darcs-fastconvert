@@ -16,6 +16,7 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Data.List ( (\\) )
+import qualified Data.Map as M
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad ( when, forM_, foldM, unless )
 import Control.Monad.Trans ( liftIO )
@@ -170,9 +171,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         masterMarks = filter isMaster $ listMarks marks
     check patches masterMarks
     marksref <- newIORef marks
+    branchesref <- newIORef $ listBranches marks
     let pristineDir = "_darcs" </> "pristine.hashed"
 
-        go :: State p -> B.ByteString -> TreeIO [BC.ByteString]
+        branchEdited b m = liftIO $ modifyIORef branchesref $
+          \bs -> M.insert (pb2bn b) m bs
+
+        go :: State p -> B.ByteString -> TreeIO [(ParsedBranchName, Int)]
         go state rest = do objectStream <- liftIO $ parseObject inHandle rest
                            case objectStream of
                              End -> handleEndOfStream state
@@ -180,7 +185,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                                 state' <- process state obj
                                 go state' rest'
 
-        handleEndOfStream :: State p -> TreeIO [BC.ByteString]
+        handleEndOfStream :: State p -> TreeIO [(ParsedBranchName, Int)]
         handleEndOfStream state = do
           doTreeIODebug "Handling end-of-stream"
           -- We won't necessarily be InCommit at the EOS.
@@ -190,12 +195,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- The stream may not reset us to master, so do it manually.
           restoreToBranch "" $ parseBranch $ BC.pack "refs/heads/master"
           fullTree <- gets tree
-          let branchTree = fromJust . findTree fullTree $
-               floatPath "_darcs/branches"
-              entries = map ((\(Name n) -> n) . fst) . T.listImmediate $
-                branchTree
-              branches = filter (/= BC.pack "head-master") entries
-          mapM_ (initBranch . ParsedBranchName) branches
+          currentBranches <- liftIO $ M.assocs `fmap` readIORef branchesref
+          let branches = (map (\(b,m) -> (ParsedBranchName b, m))) .
+                filter ((/= BC.pack "head-master") . fst) $ currentBranches
+          doTreeIODebug $ "Branches: " ++ show branches
+          mapM_ initBranch branches
           doTreeIODebug "Writing tentative pristine."
           (pristine, tree') <- getTentativePristineContents
           liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
@@ -203,11 +207,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           modify $ \s -> s { tree = tree' }
           return branches
 
-        initBranch :: ParsedBranchName -> TreeIO ()
-        initBranch b@(ParsedBranchName bName) = do
+        initBranch :: (ParsedBranchName, Int) -> TreeIO ()
+        initBranch (b@(ParsedBranchName bName), m) = do
           doTreeIODebug $ "Setting up branch dir for: " ++ BC.unpack bName
-          inventory <- readFile $ branchInventoryPath b
-          pristine <- readFile $ branchPristinePath b
+          inventory <- readFile $ markInventoryPath m
+          pristine <- readFile $ markPristinePath m
           liftIO $ withCurrentDirectory ".." $ do
             let bDir = topLevelBranchDir repodir b </> "_darcs"
                 dirs = ["inventories", "patches", "pristine.hashed"]
@@ -293,20 +297,25 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                         (fullRepoPath </> pristineDir </> name)
                       return (inventory, pristine)
               -- Stash the pristine/inventory, in case we need to reuse them.
-              stashPristineBS (Just mark) Nothing pris
-              stashInventoryBS (Just mark) Nothing inv
+              stashPristineBS (Just mark) pris
+              stashInventoryBS (Just mark) inv
               -- Actually do the reset.
               restoreFromMark prefix mark
               return mark
 
+        getLastBranchMark :: ParsedBranchName -> TreeIO Int
+        getLastBranchMark branch = do
+          currentMarks <- liftIO $ readIORef marksref
+          case lastMarkForBranch (pb2bn branch) currentMarks of
+            Just m -> return m
+            Nothing -> die $ "Couldn't find last mark for branch: "
+                             ++ (BC.unpack $ pb2bn branch)
+
         restoreToBranch :: String -> ParsedBranchName -> TreeIO Int
         restoreToBranch prefix branch = do
           doTreeIODebug "Trying to read branch pristine/inventory."
-          currentMarks <- liftIO $ readIORef marksref
-          case lastMarkForBranch (pb2bn branch) currentMarks of
-            Just m -> restoreToMark prefix m
-            Nothing -> die $ "Couldn't find last mark for branch: "
-                             ++ (BC.unpack $ pb2bn branch)
+          m <- getLastBranchMark branch
+          restoreToMark prefix m
 
         fl2inv :: forall cX cY patch . FL (PatchInfoAnd patch) cX cY -> Doc
         fl2inv ps = hcat $ map pihash inv where
@@ -324,7 +333,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         switchBranch :: Marked -> ParsedBranchName -> Maybe Committish
           -> TreeIO Int
         switchBranch currentMark currentBranch newHead = do
-          stashInventoryAndPristine currentMark (Just currentBranch)
+          stashInventoryAndPristine currentMark
           case newHead of
              Nothing -> return (fromJust currentMark) -- Base on current state
              Just newHead' -> case newHead' of
@@ -496,9 +505,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           return (Toplevel n b)
 
         process (Toplevel n currentBranch) (Reset branch from) = do
-             switchBranch n currentBranch from
-             -- Create/recreate the branch by copying the inventory/pristine.
-             stashInventoryAndPristine Nothing (Just branch)
+             fromMark <- switchBranch n currentBranch from
+             branchEdited branch fromMark
              return $ Toplevel n branch
 
         process (Toplevel n b) (Blob (Just m) bits) = do
@@ -513,6 +521,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           (Commit branch mark author message from merges) = do
           doTreeIODebug $ "Handling commit beginning: " ++
             BC.unpack (BC.take 20 message)
+          maybe (return ()) (\m -> branchEdited branch m) mark
           fromMark <- if pbranch /= branch
             then do
               doTreeIODebug $ unwords
@@ -626,17 +635,16 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                                (BC.pack $ "darcs-fastconvert merge post: "
                                  ++ randStr)
           maybe (return ()) doTag mergeID
-          stashInventoryAndPristine mark (Just branch)
+          stashInventoryAndPristine mark
 
     (branches, _) <- hashedTreeIO (go initial B.empty) initPristine
       "_darcs/pristine.hashed"
     finalizeRepositoryChanges repo
-    forM_ branches $ \b ->
-      withCurrentDirectory
-        (".." </> topLevelBranchDir repodir (ParsedBranchName b)) $ do
+    forM_ branches $ \(b,_) ->
+      withCurrentDirectory (".." </> topLevelBranchDir repodir b) $ do
         doDebug $
           "Linking pristines and copying patches/inventories for branch: "
-          ++ BC.unpack b
+          ++ BC.unpack (pb2bn b)
         -- Hardlink all pristines.
         pristines <- filter notdot `fmap`
           getDirectoryContents (".." </> repodir </> pristineDir)
@@ -654,7 +662,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                               ("_darcs" </> dir </> name)
 
         withRepository [] $ RepoJob $ \bRepo -> do
-          doDebug $ "Finalizing and cleaning branch repo: " ++ BC.unpack b
+          doDebug $ "Finalizing and cleaning branch repo: "
+                    ++ BC.unpack (pb2bn b)
           finalizeRepositoryChanges bRepo
           createPristineDirectoryTree bRepo "."
           cleanRepository bRepo

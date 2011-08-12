@@ -567,7 +567,7 @@ dumpBranches bs = dumpBranch (head sortedBranches) (tail sortedBranches)
         else acc
 
 stashPristineAtMark :: Int -> ExportM ()
-stashPristineAtMark mark = lift $ stashPristine (Just mark) Nothing
+stashPristineAtMark mark = lift $ stashPristine (Just mark)
 
 go :: (RepoPatch p) => [Branch p] -> ExportM ()
 go branches = do

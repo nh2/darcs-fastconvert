@@ -1,10 +1,9 @@
-module Stash ( restoreFromMark, restoreFromBranch, stashInventoryAndPristine
+module Stash ( restoreFromMark, stashInventoryAndPristine
              , parseBranch, ParsedBranchName(..), updateHashes, stashPristine
              , filteredUpdateHashes, markpath, restorePristineFromMark
-             , getTentativePristineContents, branchInventoryPath
-             , branchPristinePath, topLevelBranchDir, canRestoreFromMark
-             , canRestoreFromBranch, stashPristineBS, stashInventoryBS
-             , pb2bn ) where
+             , getTentativePristineContents, topLevelBranchDir
+             , canRestoreFromMark , stashPristineBS, stashInventoryBS, pb2bn
+             , markInventoryPath, markPristinePath ) where
 
 import Control.Monad.Trans ( liftIO )
 import Control.Monad.State.Strict( gets, modify )
@@ -15,6 +14,7 @@ import Data.Maybe ( fromMaybe )
 import Prelude hiding ( readFile, filter )
 import System.FilePath ( (</>) )
 
+import System.PosixCompat.Files ( fileSize, getFileStatus )
 import Storage.Hashed.Darcs
 import Storage.Hashed.Hash( decodeBase16, encodeBase16, sha256, Hash(..) )
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
@@ -41,7 +41,6 @@ parseBranch b = ParsedBranchName $ BC.concat
 
 pb2bn :: ParsedBranchName -> B.ByteString
 pb2bn (ParsedBranchName name) = name
-
 
 topLevelBranchDir :: String -> ParsedBranchName -> FilePath
 topLevelBranchDir repodir (ParsedBranchName b) = case BC.unpack b of
@@ -79,22 +78,6 @@ markInventoryPath :: Int -> AnchoredPath
 markInventoryPath n = markpath n `appendPath`
   (Name $ BC.pack "inventory")
 
-branchPath :: ParsedBranchName -> AnchoredPath
-branchPath (ParsedBranchName b) = floatPath "_darcs/branches/"
-  `appendPath` Name b
-
-branchInventoryPath :: ParsedBranchName -> AnchoredPath
-branchInventoryPath b = branchPath b `appendPath`
-  Name (BC.pack "tentative_hashed_inventory")
-
-branchPristinePath :: ParsedBranchName -> AnchoredPath
-branchPristinePath b = branchPath b `appendPath`
-  Name (BC.pack "tentative_pristine")
-
-branchMarkPath :: ParsedBranchName -> AnchoredPath
-branchMarkPath b = branchPath b `appendPath`
-  Name (BC.pack "last_mark")
-
 getTentativePristineContents :: TreeIO (BL.ByteString, Tree IO)
 getTentativePristineContents = do
   tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
@@ -104,37 +87,32 @@ getTentativePristineContents = do
 maybeReturn :: (a -> TreeIO ()) -> Maybe a -> TreeIO ()
 maybeReturn = maybe (return ())
 
-stashPristine ::  Maybe Int -> Maybe ParsedBranchName -> TreeIO ()
-stashPristine mbMark mbBranch = do
+stashPristine ::  Maybe Int -> TreeIO ()
+stashPristine mbMark = do
   (pristine, tree') <- getTentativePristineContents
   -- Manually dump the tree.
   liftIO $ writeDarcsHashed tree' "_darcs/pristine.hashed"
-  stashPristineBS mbMark mbBranch pristine
+  stashPristineBS mbMark pristine
 
-stashPristineBS :: Maybe Int -> Maybe ParsedBranchName -> BL.ByteString
-  -> TreeIO ()
-stashPristineBS mbMark mbBranch pristine = do
-  flip maybeReturn mbMark $ \mark -> do
-    TM.writeFile (markPristinePath mark) pristine
-    maybeReturn (\b -> TM.writeFile (branchMarkPath b) $ BL.pack $ show mark)
-      mbBranch
-  maybeReturn (\b -> TM.writeFile (branchPristinePath b) pristine) mbBranch
+stashPristineBS :: Maybe Int -> BL.ByteString -> TreeIO ()
+stashPristineBS mbMark pristine = flip maybeReturn mbMark $
+    \mark -> TM.writeFile (markPristinePath mark) pristine
 
-stashInventory :: Maybe Int -> Maybe ParsedBranchName -> TreeIO ()
-stashInventory mbMark mbBranch = do
+stashInventory :: Maybe Int -> TreeIO ()
+stashInventory mbMark = do
   inventory <- liftIO $ BL.readFile "_darcs/tentative_hashed_inventory"
-  stashInventoryBS mbMark mbBranch inventory
+  --fileSize <- liftIO $ fileSize `fmap` getFileStatus "_darcs/tentative_hashed_inventory"
+  --liftIO $ putStrLn $ "progress inventory size: " ++ show ((fromRational (toRational(fileSize) / toRational(1024 * 1024))) :: Double)
+  stashInventoryBS mbMark inventory
 
-stashInventoryBS :: Maybe Int -> Maybe ParsedBranchName -> BL.ByteString
-  -> TreeIO ()
-stashInventoryBS mbMark mbBranch inventory = do
+stashInventoryBS :: Maybe Int -> BL.ByteString -> TreeIO ()
+stashInventoryBS mbMark inventory = do
   maybeReturn (\m -> TM.writeFile (markInventoryPath m) inventory) mbMark
-  maybeReturn (\b -> TM.writeFile (branchInventoryPath b) inventory) mbBranch
 
-stashInventoryAndPristine :: Maybe Int -> Maybe ParsedBranchName -> TreeIO ()
-stashInventoryAndPristine mbMark mbBranch = do
-  stashPristine mbMark mbBranch
-  stashInventory mbMark mbBranch
+stashInventoryAndPristine :: Maybe Int -> TreeIO ()
+stashInventoryAndPristine mbMark = do
+  stashPristine mbMark
+  stashInventory mbMark
 
 restorePristineFromMark :: String -> Int -> TreeIO ()
 restorePristineFromMark pref m = restorePristine pref $ markPristinePath m
@@ -144,6 +122,7 @@ restoreInventoryFromMark pref m = restoreInventory pref $ markInventoryPath m
 
 restoreFromMark :: String -> Int -> TreeIO Int
 restoreFromMark pref m = do
+  liftIO $ putStrLn $ "Restoring from mark: " ++ show m ++ " with pref: " ++ pref
   restorePristineFromMark pref m
   restoreInventoryFromMark pref m
   return m
@@ -153,20 +132,6 @@ canRestoreFromMark m = do
   prisExists <- TM.fileExists $ markPristinePath m
   invExists <- TM.fileExists $ markInventoryPath m
   return $ prisExists && invExists
-
-canRestoreFromBranch :: ParsedBranchName -> TreeIO Bool
-canRestoreFromBranch b = do
-  prisExists <- TM.fileExists $ branchPristinePath b
-  invExists <- TM.fileExists $ branchInventoryPath b
-  return $ prisExists && invExists
-
-restoreFromBranch :: String -> ParsedBranchName -> TreeIO Int
-restoreFromBranch pref b = do
-  restoreInventory pref $ branchInventoryPath b
-  restorePristine pref $ branchPristinePath b
-  branchMark <- TM.readFile $ branchMarkPath b
-  let Just (m, _) = BL.readInt branchMark
-  return m
 
 restoreInventory :: String -> AnchoredPath -> TreeIO ()
 restoreInventory pref invPath = do

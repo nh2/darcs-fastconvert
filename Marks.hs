@@ -3,6 +3,7 @@ module Marks where
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.ByteString.Char8 as BS
+import Data.List ( find, foldl' )
 import Prelude hiding ( id, lines )
 import System.Directory( removeFile )
 
@@ -11,6 +12,8 @@ type MarkContent = (BS.ByteString, BS.ByteString, BS.ByteString)
 -- Mark number, patch hash, branch name.
 type ContextContent = (Int, BS.ByteString, BS.ByteString)
 
+-- Provide a 2-way map between mark and markcontent and context and context
+-- content.
 type Marks = (IM.IntMap MarkContent, M.Map BS.ByteString ContextContent)
 
 emptyMarks :: Marks
@@ -32,15 +35,16 @@ addMark (marks, ctxMarks) key value@(hash,bName,ctx) =
 listMarks :: Marks -> [(IM.Key, MarkContent)]
 listMarks (marks, _) = IM.assocs marks
 
+listBranches :: Marks -> M.Map BS.ByteString Int
+listBranches =
+  (foldl' doInsert M.empty) . extractBranches . reverse . listMarks where
+  doInsert bs (m, b) = if b `M.member` bs then bs else M.insert b m bs
+  extractBranches = map (\(m, (_, b, _)) -> (m, b))
+
 lastMarkForBranch :: BS.ByteString -> Marks -> Maybe Int
-lastMarkForBranch branchToSearch = doFind 0 . listMarks where
-  doFind :: Int -> [(IM.Key, MarkContent)] -> Maybe Int
-  doFind n [] | n <= 0 = Nothing
-  doFind n [] = Just n
-  doFind n ((mark, (_, branch, _)) : ms) =
-    if branch == branchToSearch
-      then doFind (if mark > n then mark else n) ms
-      else doFind n ms
+lastMarkForBranch branchToFind marks = fst `fmap` branchEntry
+ where branchEntry = find isRightBranch . reverse . listMarks $ marks
+       isRightBranch (_, (_, branch, _)) = branch == branchToFind
 
 findMarkForCtx :: String -> Marks -> Maybe Int
 findMarkForCtx s m = (\(mark,_,_) -> mark) `fmap` getContext m (BS.pack s)
