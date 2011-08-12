@@ -299,32 +299,14 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               restoreFromMark prefix mark
               return mark
 
+        restoreToBranch :: String -> ParsedBranchName -> TreeIO Int
         restoreToBranch prefix branch = do
           doTreeIODebug "Trying to read branch pristine/inventory."
-          canRestore <- canRestoreFromBranch branch
-          if canRestore
-            then restoreFromBranch prefix branch
-            else slowRestoreFromBranch prefix branch
-
-        slowRestoreFromBranch prefix branch = do
-          fullRepoPath <- liftIO $ canonicalizePath "."
-          branchDir <- liftIO $
-            canonicalizePath (".." </> topLevelBranchDir repodir branch)
-            `catch` \_ -> die $ "Non-existent branch: " ++ show branch
-          (inv, pris, mark) <- liftIO $ withCurrentDirectory branchDir $
-            withRepository [] $ RepoJob $ \bRepo -> do
-              (inventory, pristine, _) <-
-                readBranchPristinesAndInventory bRepo branchDir fullRepoPath
-              case lastMarkForBranch (pb2bn branch) marks of
-                Nothing -> die $
-                  "Couldn't find last mark for branch " ++ show branch
-                Just mark -> return (inventory, pristine, mark)
-          -- Stash the pristine/inventory, in case we need to reuse them.
-          stashPristineBS (Just mark) (Just branch) pris
-          stashInventoryBS (Just mark) (Just branch) inv
-          -- Actually do the reset.
-          restoreFromBranch prefix branch
-          return mark
+          currentMarks <- liftIO $ readIORef marksref
+          case lastMarkForBranch (pb2bn branch) currentMarks of
+            Just m -> restoreToMark prefix m
+            Nothing -> die $ "Couldn't find last mark for branch: "
+                             ++ (BC.unpack $ pb2bn branch)
 
         fl2inv :: forall cX cY patch . FL (PatchInfoAnd patch) cX cY -> Doc
         fl2inv ps = hcat $ map pihash inv where
