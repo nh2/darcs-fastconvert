@@ -433,28 +433,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         diffCurrent _ _ =
           error "diffCurrent is never valid outside of a commit."
 
-        checkForNewFile s@(InCommit mark branch start ps endps pInfo mergeID)
-         path = do
-          let rawPath = BC.unpack path
-              floatedPath = floatPath rawPath
-              -- Only update the hash of the newly added file.
-              updateFileHash = filteredUpdateHashes $
-                Just (\itemPath _ -> itemPath == floatedPath)
-          current <- updateTreeWithPrims rawPath endps updateFileHash
-          case T.findFile start floatedPath of
-            -- If we've just added a new file, we do not need to do a full
-            -- diff, instead just add the raw prims to our incremental RL.
-            Nothing -> do
-              contents <- (BC.lines . BC.concat . BL.toChunks)
-                `fmap` readFile floatedPath
-              let hunkPatch = hunk rawPath 1 [] contents
-                  addPatches = hunkPatch :<: addfile rawPath :<: ps
-              return $
-                InCommit mark branch current addPatches endps pInfo mergeID
-            -- If the file already existed, just diff.
-            (Just _) -> diffCurrent s rawPath
-        checkForNewFile _ _ = error
-          "checkForNewFile is never valid outside of a commit."
         readRepoFromInventory :: Inventory -> TreeIO (SealedPatchSet p Origin)
         readRepoFromInventory inv = liftIO
           -- Reverse the inventory order since we prepend new patches to the
@@ -592,12 +570,12 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         process s@(InCommit _ _ _ _ _ _ _) (Modify (ModifyMark m) path) = do
           doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.copy (markpath m) (floatPath $ BC.unpack path)
-          checkForNewFile s path
+          diffCurrent s path
 
         process s@(InCommit _ _ _ _ _ _ _) (Modify (Inline bits) path) = do
           doTreeIODebug $ "Handling modify of: " ++ BC.unpack path
           TM.writeFile (floatPath $ BC.unpack path) (BL.fromChunks [bits])
-          checkForNewFile s path
+          diffCurrent s path
 
         process (InCommit _ _ _ _ _ _ _) (Modify (ModifyHash hash) path) =
           die $ unwords ["Cannot currently handle Git hash:",
@@ -621,7 +599,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           TM.copy (unpackFloat from) (unpackFloat to)
           -- We can't tell Darcs that a file has been copied, so it'll show as
           -- an addfile.
-          diffCurrent s $ BC.unpack to
+          diffCurrent s to
 
         process (InCommit mark branch start ps endps pInfo mergeID)
           (Rename from to) = do
