@@ -522,7 +522,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           doTreeIODebug $ "Handling commit beginning: " ++
             BC.unpack (BC.take 20 message)
           maybe (return ()) (\m -> branchEdited branch m) mark
-          fromMark <- if pbranch /= branch
+          fromMark <- if (pbranch /= branch) || (from /= previous)
             then do
               doTreeIODebug $ unwords
                 [ "Switching branch from", show pbranch, "to", show branch
