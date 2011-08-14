@@ -282,7 +282,7 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
             Nothing -> do
               progressWarn [ "could not find merge end tag with mergeID:"
                            , mergeID, "merge will be omitted." ]
-              dumpBranches $ incBranch bFrom : bs
+              dumpBranch (incBranch bFrom) bs
             Just (Sealed mPs, Sealed2 endTag, FlippedSeal bps') ->
               case partitionMergesAndResolutions mergeID mPs of
                 -- If we can't find any source tags, we can't recreate the
@@ -291,7 +291,7 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                 Nothing -> do
                   progressWarn [ "could not find merge source tag(s) with"
                                , "mergeID:", mergeID, "merge will be omitted."]
-                  dumpBranches $ incBranch bFrom : bs
+                  dumpBranch (incBranch bFrom) bs
                 Just (merges, Sealed2 resolutions) -> do
                   currentFrom <- gets lastExportedMark
                   let mergeTagInfo = info bp
@@ -299,7 +299,8 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                   -- present as we have already hit it.
                   (Sealed origPsUpToMerge) <- return . fromJust $
                         tryTakeUntilFL ((== mergeTagInfo) . info) bOrigPs
-                  mergeMarks <- dumpMergeSources (seal2 origPsUpToMerge) merges
+                  mergeMarks <-
+                    dumpMergeSources bName (seal2 origPsUpToMerge) merges
                   -- Reset our current state since it could have been changed
                   -- if some merge sources hadn't been exported.
                   lift $ restorePristineFromMark bFrom
@@ -316,16 +317,16 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                   newFrom <- maybe dumpMergeP stashUpdateLastMark mbCtxMark
                   let newBranch = Branch newFrom bName branchCtx
                         (seal2 bOrigPs) (seal2 bps')
-                  dumpBranches $ newBranch : bs
+                  dumpBranch newBranch bs
         Nothing -> do
           unless (isAnyMergeTag bp) $ dumpTag bp
-          dumpBranches $ incBranch bFrom : bs
+          dumpBranch (incBranch bFrom) bs
       else do
         let nextCtx = hashPatch bCtx bp
             patchDumper = dumpPatch nextCtx bp bName
         mbCtxMark <- ctxToMark nextCtx
         newFrom <- maybe patchDumper stashUpdateLastMark mbCtxMark
-        dumpBranches (Branch newFrom bName nextCtx (seal2 bOrigPs) (seal2 bps) : bs)
+        dumpBranch (Branch newFrom bName nextCtx (seal2 bOrigPs) (seal2 bps) ) bs
   where
     progressWarn ws = asks printer >>=
       \p -> p . BLC.pack . unwords . ("progress WARNING:" :) $ ws
@@ -373,17 +374,15 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
     -- |dumpMergeSources ensures that each of a list of merge sources (a FL and
     -- end-tag pair) have been dumped, returning a list of the marks
     -- corresponding to the branch tips.
-    dumpMergeSources :: (RepoPatch p) => Sealed2(FL (PatchInfoAnd p))
+    dumpMergeSources :: (RepoPatch p) => String -> Sealed2(FL (PatchInfoAnd p))
       -> [(Sealed2(FL (PatchInfoAnd p)), Sealed2(PatchInfoAnd p))]
       -> ExportM [Int]
-    dumpMergeSources _ [] = return []
-    dumpMergeSources targetPs ((Sealed2 ps, Sealed2 tag) : ss) = do
+    dumpMergeSources _ _ [] = return []
+    dumpMergeSources bName targetPs ((Sealed2 ps, Sealed2 tag) : ss) = do
       let dependencyPIs = reverse . getdeps . hopefully $ tag
           newPIs = mapFL info ps
           ctxPIs = dependencyPIs \\ newPIs
-      tempBranchName <- liftIO $
-        flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
-      checkOrDumpPatches tempBranchName ctxPIs targetPs
+      checkOrDumpPatches bName ctxPIs targetPs
       let targetPsList = flToList targetPs
           mbOriginalPatches = commuteOutNonDeps targetPsList newPIs ps
       branchOriginalPatches <- case mbOriginalPatches of
@@ -391,8 +390,8 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                Nothing -> die $ "Couldn't commute merged patches back into "
                                  ++ "their original form."
       sourceMark <-
-        checkOrDumpPatches tempBranchName dependencyPIs branchOriginalPatches
-      others <- dumpMergeSources targetPs ss
+        checkOrDumpPatches bName dependencyPIs branchOriginalPatches
+      others <- dumpMergeSources bName targetPs ss
       return $ sourceMark : others
 
     flToList :: Sealed2(FL (PatchInfoAnd p)) -> [Sealed2 (PatchInfoAnd p)]
@@ -436,10 +435,6 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
       contextAlreadyExported <- findMostRecentMarkFromCtx pis
       case contextAlreadyExported of
         Right m -> return m
-        -- The entire merged-branch hasn't already been exported, we export the
-        -- patches on a randomly-named branch. Had the branch been available
-        -- for export, it would have been exported due to our sorting in
-        -- dumpBranches.
         Left (latestCtx, latestMark, remainingPIs) -> do
           let mbCtxPs = extractPatchesByPatchInfos remainingPIs targetPs
           case mbCtxPs of
@@ -548,31 +543,15 @@ dumpMergePatch ctx resolutions mergeTag merges touchedFiles bName = do
 fl2Ctx :: String -> FL (PatchInfoAnd p) x y -> String
 fl2Ctx = foldlFL hashPatch
 
-dumpBranches :: (RepoPatch p) => [Branch p] -> ExportM ()
-dumpBranches [] = return ()
-dumpBranches bs = dumpBranch (head sortedBranches) (tail sortedBranches)
-  where
-    sortedBranches = sortBy branchOrderer bs
-    -- We want to export non-merges first, since the merges could be merge the
-    -- patches from the non-merges.
-    branchOrderer :: Branch p -> Branch p -> Ordering
-    branchOrderer = comparing mergeHeadDepth
-    mergeHeadDepth :: Branch p -> Int
-    mergeHeadDepth (Branch _ _ _ _ ps) = mergeHeadDepth' 0 ps
-    mergeHeadDepth' :: Int -> Sealed2(FL(PatchInfoAnd p)) -> Int
-    mergeHeadDepth' acc (Sealed2 NilFL) = acc
-    mergeHeadDepth' acc (Sealed2(p :>: ps)) =
-      if isJust $ isMergeBeginTag p
-        then mergeHeadDepth' (acc + 1) (seal2 ps)
-        else acc
-
 stashPristineAtMark :: Int -> ExportM ()
 stashPristineAtMark mark = lift $ stashPristine (Just mark)
 
 go :: (RepoPatch p) => [Branch p] -> ExportM ()
+go [] = return ()
 go branches = do
   stashPristineAtMark 0
-  dumpBranches branches
+  dumpBranch (head branches) (tail branches)
+
 
 fastExport :: (BLU.ByteString -> ExportM ()) -> String -> [FilePath] -> Marks
   -> IO Marks
