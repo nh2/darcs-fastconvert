@@ -254,7 +254,7 @@ hashInfo ctx = sha1PS . BC.pack . (ctx ++) . makePatchname
 
 restoreBranch :: Int -> ExportM ()
 restoreBranch bFrom = do
-  lift $ restorePristineFromMark "exportTemp" bFrom
+  lift $ restorePristineFromMark bFrom
   -- Ensure any exported patches are based on the *branch's* previous
   -- commit, not the globally previous commit.
   modify (\s -> s {lastExportedMark = bFrom})
@@ -302,7 +302,7 @@ dumpBranch (Branch bFrom bName bCtx (Sealed2 bOrigPs) (Sealed2(bp:>:bps))) bs =
                   mergeMarks <- dumpMergeSources (seal2 origPsUpToMerge) merges
                   -- Reset our current state since it could have been changed
                   -- if some merge sources hadn't been exported.
-                  lift $ restorePristineFromMark "exportTemp" bFrom
+                  lift $ restorePristineFromMark bFrom
                   modify (\s -> s {lastExportedMark = currentFrom})
                   -- mPs includes all merged patches, and any resolutions
                   lift $ apply mPs

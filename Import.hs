@@ -18,15 +18,16 @@ import Data.IORef ( newIORef, modifyIORef, readIORef )
 import Data.List ( (\\) )
 import qualified Data.Map as M
 import Control.Applicative ( Alternative, (<|>) )
-import Control.Monad ( when, forM_, foldM, unless )
-import Control.Monad.Trans ( liftIO )
-import Control.Monad.State.Strict( gets, modify )
+import Control.Arrow ( first, (&&&) )
+import Control.Monad ( when, forM_, foldM, unless, void )
+import Control.Monad.Trans ( liftIO, MonadIO )
+import Control.Monad.State.Strict( modify )
 import Data.Maybe ( isNothing, fromMaybe, fromJust )
 import Numeric ( showHex )
 import Prelude hiding ( readFile, lex, log, pi )
 import System.Directory ( doesFileExist, createDirectory
                         , createDirectoryIfMissing, getDirectoryContents
-                        , copyFile, removeFile, canonicalizePath )
+                        , copyFile, canonicalizePath )
 import System.IO ( Handle )
 import System.FilePath ( (</>) )
 import System.PosixCompat.Files ( createLink )
@@ -41,44 +42,42 @@ import Darcs.Flags( Compression( .. )
 import Darcs.Lock( withTempDir )
 import Darcs.RepoPath ( toPath )
 import Darcs.Repository ( Repository, withRepoLock, RepoJob(..)
-                        , readTentativeRepo, readRepo
-                        , readRepoUsingSpecificInventory , withRepository
-                        , createRepository , createPristineDirectoryTree
+                        , readRepo , withRepository, createRepository
+                        , createPristineDirectoryTree
                         , finalizeRepositoryChanges , cleanRepository )
-import Darcs.Repository.HashedRepo ( addToTentativeInventory
-                                   , addToSpecificInventory )
+import Darcs.Repository.HashedRepo ( writePatchIfNecessary
+                                   , readRepoFromInventoryList )
 import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Repository.Prefs( FileType(..) )
 import Darcs.Repository.State( readRecorded )
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, adddeps, rmfile, rmdir
-                   , adddir, move, addfile, hunk, invert )
+                   , adddir, move, invert )
 import Darcs.Patch.Apply ( Apply(..), applyToTree )
 import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
                            , merge2FL )
 import Darcs.Patch.FileName ( fp2fn, normPath )
-import Darcs.Patch.Info ( PatchInfo, patchinfo, showPatchInfo, piAuthor )
+import Darcs.Patch.Info ( PatchInfo, patchinfo, piAuthor )
 import Darcs.Patch.MatchData ( patchMatch )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia, extractHash, info )
 import Darcs.Patch.Prim ( sortCoalesceFL )
 import Darcs.Patch.Prim.Class ( PrimOf, is_filepatch )
 import Darcs.Patch.Prim.V1 ( Prim )
 import Darcs.Patch.Read ( readPatch )
-import Darcs.Patch.Set ( newset2FL )
+import Darcs.Patch.Set ( newset2FL, SealedPatchSet, Origin )
 import Darcs.Patch.V2 ( RealPatch )
 import Darcs.Utils ( nubsort, withCurrentDirectory, treeHasDir, treeHasFile )
 import Darcs.Witnesses.Ordered ( FL(..), RL(..), (+<+), reverseFL, reverseRL
                                , (:\/:)(..), mapFL, filterRL, lengthRL )
-import Darcs.Witnesses.Sealed ( seal, Sealed(..), unFreeLeft, seal2,
+import Darcs.Witnesses.Sealed ( Sealed(..), unFreeLeft, seal2,
                                 Sealed2(..), unsafeUnseal2 )
 import Darcs.Witnesses.Unsafe ( unsafeCoercePEnd )
-import Printer ( hcat, ($$), text, renderString, Doc )
 
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
 import qualified Storage.Hashed.Monad as TM
 import qualified Storage.Hashed.Tree as T
+import Storage.Hashed.Tree ( Tree(..) )
 import Storage.Hashed.Darcs
-import Storage.Hashed.Tree( Tree, findTree )
-import Storage.Hashed.AnchoredPath( floatPath, Name(..), parents, anchorPath )
+import Storage.Hashed.AnchoredPath( floatPath, parents, anchorPath )
 
 data RepoFormat = Darcs2Format | HashedFormat deriving (Eq, Data, Typeable)
 
@@ -137,7 +136,8 @@ fastImport debug inHandle printer repodir fmt =
          HashedFormat -> [UseHashedInventory]
        withRepoLock [] $ RepoJob $ \repo -> do
          let initState = Toplevel Nothing masterBranchName
-         fastImport' debug realRepoPath inHandle printer repo emptyMarks initState
+         fastImport' debug realRepoPath inHandle printer repo emptyMarks
+           initState
 
 fastImportIncremental :: Bool -> Handle -> (String -> IO ()) -> String
   -> Marks -> IO Marks
@@ -154,6 +154,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     let doDebug x = when debug $ printer $ "Import debug: " ++ x
         doTreeIODebug :: String -> TreeIO ()
         doTreeIODebug x = liftIO $ doDebug x
+        -- (All inventories, current inventory)
+        initInventories = (emptyMarkInventory, [])
     initPristine <- readRecorded repo
     patches <- newset2FL `fmap` readRepo repo
     -- We can easily check the master patches, which will ensure that the marks
@@ -172,6 +174,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
     check patches masterMarks
     marksref <- newIORef marks
     branchesref <- newIORef $ listBranches marks
+    inventoriesref <- newIORef initInventories
     let pristineDir = "_darcs" </> "pristine.hashed"
 
         branchEdited b m = liftIO $ modifyIORef branchesref $
@@ -192,17 +195,21 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           case state of
             s@(InCommit _ _ _ _ _ _ _) -> finalizeCommit s
             _ -> return ()
-          -- The stream may not reset us to master, so do it manually.
-          restoreToBranch "" $ parseBranch $ BC.pack "refs/heads/master"
-          fullTree <- gets tree
           currentBranches <- liftIO $ M.assocs `fmap` readIORef branchesref
-          let branches = (map (\(b,m) -> (ParsedBranchName b, m))) .
+          unless (null currentBranches) $
+            -- The stream may not reset us to master, so do it manually.
+            void $ restoreToBranch $ parseBranch $ BC.pack "refs/heads/master"
+          let branches = map (first ParsedBranchName) .
                 filter ((/= BC.pack "head-master") . fst) $ currentBranches
-          doTreeIODebug $ "Branches: " ++ show branches
           mapM_ initBranch branches
           doTreeIODebug "Writing tentative pristine."
           (pristine, tree') <- getTentativePristineContents
-          liftIO $ BL.writeFile "_darcs/tentative_pristine" pristine
+          liftIO $ writePristineToPath "_darcs/tentative_pristine" pristine
+          inv <- liftIO $
+            (getLastBranchMark masterBranchName >>= getInventoryForMark . Just)
+              `catch` \_ -> return []
+          liftIO $
+            writeInventoryToPath "_darcs/tentative_hashed_inventory" inv
           -- dump the right tree, without _darcs
           modify $ \s -> s { tree = tree' }
           return branches
@@ -210,20 +217,21 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         initBranch :: (ParsedBranchName, Int) -> TreeIO ()
         initBranch (b@(ParsedBranchName bName), m) = do
           doTreeIODebug $ "Setting up branch dir for: " ++ BC.unpack bName
-          inventory <- readFile $ markInventoryPath m
           pristine <- readFile $ markPristinePath m
+          inv <- liftIO $ getInventoryForMark (Just m)
           liftIO $ withCurrentDirectory ".." $ do
             let bDir = topLevelBranchDir repodir b </> "_darcs"
                 dirs = ["inventories", "patches", "pristine.hashed"]
             mapM_ (createDirectoryIfMissing True . (bDir </>)) dirs
-            BL.writeFile (bDir </> "tentative_hashed_inventory") inventory
-            BL.writeFile (bDir </> "tentative_pristine") pristine
+            liftIO $
+              writeInventoryToPath (bDir </> "tentative_hashed_inventory") inv
+            writePristineToPath (bDir </> "tentative_pristine") pristine
             BL.writeFile (bDir </> "format") $ BL.pack $
               unlines ["hashed", "darcs-2"]
 
         readBranchPristinesAndInventory :: forall p1 r1 u1 . (RepoPatch p1) =>
           Repository p1 r1 u1 r1 -> FilePath -> FilePath
-          -> IO (BL.ByteString, BL.ByteString, [String])
+          -> IO (Inventory, BL.ByteString, [String])
         readBranchPristinesAndInventory bRepo branchDir fullRepoPath = do
           ps <- newset2FL `fmap` readRepo bRepo
           -- Create a complete inventory, since we can't be sure
@@ -232,7 +240,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- inventories will be without 'Starting with inventory:'
           -- and on incremental imports we will create the entire
           -- inventory, so we will never be missing inventories.
-          let inventory = BL.pack . renderString . fl2inv $ ps
+          let inventory = fl2inv ps
           -- We can read the first line of hashed_inventory to
           -- obtain the current pristine.
           pristine <- (head . BL.lines) `fmap`
@@ -249,17 +257,59 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               (branchDir </> pristineDir </> name) target
           return (inventory, pristine, pristines)
 
-        restoreToMark prefix mark = do
-          doTreeIODebug "Trying to read mark pristine/inventory."
-          canRestore <- canRestoreFromMark mark
-          if canRestore
-            then restoreFromMark prefix mark
-            else slowRestoreFromMark prefix mark
+        stashInventoryAndPristine :: Marked -> TreeIO ()
+        stashInventoryAndPristine mbMark = do
+          stashPristine mbMark
+          liftIO $ stashInventory mbMark =<< getCurrentInventory
 
-        slowRestoreFromMark prefix mark = do
+        stashInventory :: Marked -> Inventory -> IO ()
+        stashInventory mbMark inv = maybe (return ()) updateInvs mbMark where
+          updateInvs mark = modifyIORef inventoriesref $
+            first (addMarkInventory mark inv)
+
+        getCurrentInventory :: IO Inventory
+        getCurrentInventory = snd `fmap` readIORef inventoriesref
+
+        addPatchToCurrentInventory :: PatchInfo -> String -> IO ()
+        addPatchToCurrentInventory pInfo hash =
+          modifyIORef inventoriesref $ \(is, current) ->
+            let newInv = (pInfo, hash) : current in
+            newInv `seq` (is, newInv)
+
+        getInventoryForMark :: Marked -> IO Inventory
+        getInventoryForMark mbMark = do
+          mark <- maybe (die "Cannot obtain inventory from Nothing mark.")
+            return mbMark
+          (invs, _) <- readIORef inventoriesref
+          let mbInv = getMarkInventory mark invs
+          case mbInv of
+            Just inv -> return inv
+            Nothing -> die $ "Couldn't retrieve inventory for mark: "
+                             ++ show mark
+
+        restoreInventoryFromMark mbMark = do
+          inv <- getInventoryForMark mbMark
+          modifyIORef inventoriesref $ \(invs, _) -> (invs, inv)
+
+        restoreToMark mark = do
+          canRestore <- canRestoreFromMark mark
+          doTreeIODebug $ "Trying to read mark " ++ show mark
+            ++ " pristine/inventory "
+            ++ if canRestore then "quickly" else "slowly"
+          let restorer = if canRestore
+                           then fastRestoreFromMark
+                           else slowRestoreFromMark
+          restorer mark
+          return mark
+
+        fastRestoreFromMark mark = do
+          restorePristineFromMark mark
+          liftIO $ restoreInventoryFromMark (Just mark)
+
+        slowRestoreFromMark mark = do
           doTreeIODebug $
-            "Mark pristine or inventory was not found. Cloning and unpulling "
-            ++ "by hashes, to find the correct pristine/inventory; this may "
+            "Mark pristine was not found. Cloning and unpulling "
+            ++ "by hashes, to find the correct pristine; this may "
             ++ "well be slow."
           case getMark marks mark of
             Nothing -> die $ "Cannot restore to mark: " ++ show mark
@@ -296,55 +346,47 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                         (tempRepoPath </> pristineDir </> name)
                         (fullRepoPath </> pristineDir </> name)
                       return (inventory, pristine)
-              -- Stash the pristine/inventory, in case we need to reuse them.
               stashPristineBS (Just mark) pris
-              stashInventoryBS (Just mark) inv
-              -- Actually do the reset.
-              restoreFromMark prefix mark
-              return mark
+              liftIO $ stashInventory (Just mark) inv
+              fastRestoreFromMark mark
 
-        getLastBranchMark :: ParsedBranchName -> TreeIO Int
+        getLastBranchMark :: ParsedBranchName -> IO Int
         getLastBranchMark branch = do
-          currentMarks <- liftIO $ readIORef marksref
+          currentMarks <- readIORef marksref
           case lastMarkForBranch (pb2bn branch) currentMarks of
             Just m -> return m
             Nothing -> die $ "Couldn't find last mark for branch: "
-                             ++ (BC.unpack $ pb2bn branch)
+                             ++ BC.unpack (pb2bn branch) ++ " marks: \n" ++
+                             show currentMarks
 
-        restoreToBranch :: String -> ParsedBranchName -> TreeIO Int
-        restoreToBranch prefix branch = do
+        restoreToBranch :: ParsedBranchName -> TreeIO Int
+        restoreToBranch branch = do
           doTreeIODebug "Trying to read branch pristine/inventory."
-          m <- getLastBranchMark branch
-          restoreToMark prefix m
+          m <- liftIO $ getLastBranchMark branch
+          restoreToMark m
 
-        fl2inv :: forall cX cY patch . FL (PatchInfoAnd patch) cX cY -> Doc
-        fl2inv ps = hcat $ map pihash inv where
-          inv = mapFL getInfoAndHash ps
-
+        fl2inv :: forall cX cY patch . FL (PatchInfoAnd patch) cX cY
+          -> Inventory
+        fl2inv ps = reverse $ mapFL getInfoAndHash ps where
           getInfoAndHash :: forall cA cB . PatchInfoAnd patch cA cB
             -> (PatchInfo, String)
           getInfoAndHash p = case extractHash p of
             Right h -> (info p, h)
             _       -> error "FATAL: could not extract hash of patch."
 
-          pihash :: (PatchInfo, String) -> Doc
-          pihash (pi, h) = showPatchInfo pi $$ text ("hash: " ++ h ++ "\n")
-
-        switchBranch :: Marked -> ParsedBranchName -> Maybe Committish
+        switchBranch :: Marked -> Maybe Committish
           -> TreeIO Int
-        switchBranch currentMark currentBranch newHead = do
-          stashInventoryAndPristine currentMark
-          case newHead of
-             Nothing -> return (fromJust currentMark) -- Base on current state
-             Just newHead' -> case newHead' of
-               HashId _ -> error "Cannot branch to commit id"
-               MarkId mark -> restoreToMark "" mark
-               BranchName bName -> restoreToBranch "" $ parseBranch bName
+        switchBranch currentMark newHead = case newHead of
+          Nothing -> return (fromJust currentMark) -- Base on current state
+          Just newHead' -> case newHead' of
+            HashId _ -> error "Cannot branch to commit id"
+            MarkId mark -> restoreToMark mark
+            BranchName bName -> restoreToBranch $ parseBranch bName
 
         makeinfo author message tag = do
           let (name, log) = case BC.unpack message of
                 "" -> ("Unnamed patch", [])
-                msg -> (\ls -> (head ls, tail ls)) . lines $ msg
+                msg -> (head &&& tail) . lines $ msg
               (author'', date'') = span (/='>') $ BC.unpack author
               date' = dropWhile (`notElem` "0123456789") date''
               author' = author'' ++ ">"
@@ -353,25 +395,20 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO $ patchinfo date
             (if tag then "TAG " ++ name else name) author' log
 
-        addToTentativeInv :: (RepoPatch pa) => PatchInfoAnd pa x y
-          -> IO FilePath
-        addToTentativeInv = addToTentativeInventory (extractCache repo)
-          GzipCompression
-
-        addtag prefix author msg =
+        addtag :: BC.ByteString -> BC.ByteString -> TreeIO ()
+        addtag author msg =
           do pInfo <- makeinfo author msg True
-             gotany <- liftIO $ doesFileExist $
-               "_darcs" </> prefix ++ "tentative_pristine"
-             let invPath = prefix ++ "tentative_hashed_inventory"
-             deps <- if gotany then liftIO $
-               getTagsRight `fmap` readRepoUsingSpecificInventory invPath repo
-                               else return []
-             let ident = NilFL :: FL (RealPatch Prim) cX cX
+             inventory <- liftIO getCurrentInventory
+             let gotany = not $ null inventory
+             (Sealed patchSet) <- readRepoFromInventory inventory
+             let deps = if gotany then getTagsRight patchSet else []
+                 ident = NilFL :: FL (RealPatch Prim) cX cX
                  patch = adddeps (infopatch pInfo ident) deps
-                 addToInv = addToSpecificInventory invPath (extractCache repo)
-                              GzipCompression
-             liftIO . addToInv . n2pia $ patch
-             return ()
+             hash <- liftIO $ snd `fmap` writePatchIfNecessary
+               (extractCache repo) GzipCompression (n2pia patch)
+             doTreeIODebug $
+               "Adding tag beginning:" ++ BC.unpack (BC.take 20 msg)
+             liftIO $ addPatchToCurrentInventory pInfo hash
 
         primsAffectingFile :: FilePath -> RL (PrimOf p) cX cY
           -> [Sealed2 (PrimOf p)]
@@ -384,12 +421,11 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           let affectingPrims :: [Sealed2 (PrimOf p)]
               affectingPrims = primsAffectingFile fn endps
               invertedPrims = map (invert.unsafeUnseal2) affectingPrims
-          doTreeIODebug $ (show.length $ affectingPrims) ++ " affecting prims."
           current <- treeProvider
           liftIO $ foldM (flip applyToTree) current invertedPrims
 
         diffCurrent (InCommit mark branch start ps endps pInfo mergeID) fn = do
-          current <- updateTreeWithPrims fn endps updateHashes
+          current <- updateTreeWithPrims (BC.unpack fn) endps updateHashes
           Sealed diff <- unFreeLeft `fmap`
             liftIO (treeDiff (const TextFile) start current)
           let newps = reverseFL diff +<+ ps
@@ -419,36 +455,46 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             (Just _) -> diffCurrent s rawPath
         checkForNewFile _ _ = error
           "checkForNewFile is never valid outside of a commit."
+        readRepoFromInventory :: Inventory -> TreeIO (SealedPatchSet p Origin)
+        readRepoFromInventory inv = liftIO
+          -- Reverse the inventory order since we prepend new patches to the
+          -- inventory list but inventorise are stored oldest->newest on disk
+          -- (and the readinv code expects them in that order).
+          (readRepoFromInventoryList (extractCache repo)
+            (Nothing, reverse inv)
+          `catch`
+          \_ -> die $ "Failed to read repo from inventory: " ++ show inv)
 
         mergeIfNecessary :: Marked -> Merges -> AuthorInfo ->
           TreeIO (Maybe String)
         mergeIfNecessary _ [] _ = return Nothing
-        mergeIfNecessary currentMark merges author = do
+        mergeIfNecessary fromMark merges author = do
           randStr <- liftIO $
             flip showHex "" `fmap` randomRIO (0,2^(128 ::Integer) :: Integer)
-          let cleanup :: Int -> TreeIO ()
-              cleanup m = liftIO $ forM_ ["pristine", "hashed_inventory"] $
-                   removeFile . (("_darcs" </> show m ++ "tentative_") ++)
-              getMarkPatches m = do
-                restoreToMark (show m) m
+          let getMarkPatches m = do
+                restoreToMark m
                 -- Tag the source, so we know the pre-merge context of each set
                 -- of patches.
-                addtag (show m) author
+                addtag author
                   (BC.pack $ "darcs-fastconvert merge pre-source: " ++ randStr)
-                liftIO $ seal `fmap` readRepoUsingSpecificInventory
-                  (show m ++ "tentative_hashed_inventory") repo
+                inventory <- liftIO getCurrentInventory
+                readRepoFromInventory inventory
           liftIO $ mapM_ (doDebug . ("Merging branch: " ++) . show) merges
           (Sealed them) <- newsetUnion `fmap` mapM getMarkPatches merges
-          restoreToMark "" (fromJust currentMark)
-          addtag "" author
+          restoreToMark $ fromJust fromMark
+          addtag author
             (BC.pack $ "darcs-fastconvert merge pre-target: " ++ randStr)
-          us <- liftIO $ readTentativeRepo repo
+          inventory <- liftIO getCurrentInventory
+          (Sealed us) <- readRepoFromInventory inventory
           us' :\/: them' <- return $ findUncommon us them
           (Sealed merged) <- return $ merge2FL us' them'
-          liftIO . sequence_ $ mapFL addToTentativeInv merged
+          infosAndHashes <- liftIO . sequence $ mapFL hasher merged
+          liftIO $ forM_ infosAndHashes $ uncurry addPatchToCurrentInventory
           apply merged
-          mapM_ cleanup merges
           return $ Just randStr
+
+        hasher :: forall cX cY. PatchInfoAnd p cX cY -> IO (PatchInfo, String)
+        hasher = writePatchIfNecessary (extractCache repo) GzipCompression
 
         tryParseDarcsPatches :: B.ByteString ->
           (B.ByteString, (Sealed2 (RL (PrimOf p)), Sealed2 (RL (PrimOf p))))
@@ -499,13 +545,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         process (Toplevel n b) (Tag what author msg) = do
           if Just what == n
-             then addtag "" author msg
+             then addtag author msg
              else liftIO $ printer $ "WARNING: Ignoring out-of-order tag " ++
                              head (lines $ BC.unpack msg)
           return (Toplevel n b)
 
-        process (Toplevel n currentBranch) (Reset branch from) = do
-             fromMark <- switchBranch n currentBranch from
+        process (Toplevel n _) (Reset branch from) = do
+             fromMark <- switchBranch n from
              branchEdited branch fromMark
              return $ Toplevel n branch
 
@@ -521,13 +567,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           (Commit branch mark author message from merges) = do
           doTreeIODebug $ "Handling commit beginning: " ++
             BC.unpack (BC.take 20 message)
-          maybe (return ()) (\m -> branchEdited branch m) mark
+          maybe (return ()) (branchEdited branch) mark
           fromMark <- if (pbranch /= branch) || (from /= previous)
             then do
               doTreeIODebug $ unwords
                 [ "Switching branch from", show pbranch, "to", show branch
                 , "previous:", show previous, "from:", show from]
-              Just `fmap` switchBranch previous pbranch (MarkId `fmap` from)
+              Just `fmap` switchBranch previous (MarkId `fmap` from)
             else return previous
           mergeID <- mergeIfNecessary fromMark merges author
           (message', (Sealed2 prePatches, Sealed2 postPatches)) <-
@@ -595,7 +641,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 return $ rmPatch :<: NilRL
               else do
                 let parentPaths = parents $ floatPath uTo
-                    missing = filter (isNothing . findTree start) parentPaths
+                    missing = filter (isNothing . T.findTree start) parentPaths
                     missingPaths = nubsort (map (anchorPath "") missing)
                 return $ foldl (flip $ (:<:) . adddir) NilRL missingPaths
           let movePatches = move uFrom uTo :<: preparePatchesRL
@@ -622,8 +668,9 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           (prims :: FL p cX cY)  <- return $ fromPrims $
             sortCoalesceFL . reverseRL $ endps +<+ unsafeCoercePEnd ps
           let patch = infopatch pInfo prims
-          liftIO $ addToTentativeInventory (extractCache repo)
-                                           GzipCompression (n2pia patch)
+          hash <- liftIO $ snd `fmap` writePatchIfNecessary (extractCache repo)
+            GzipCompression (n2pia patch)
+          liftIO $ addPatchToCurrentInventory pInfo hash
           case mark of
             Nothing -> return ()
             Just n -> case getMark marks n of
@@ -631,7 +678,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
                 \m -> addMark m n (patchHash $ n2pia patch, pb2bn branch, BC.pack "-")
               Just (n', _, _) -> die $ "Mark already exists: " ++ BC.unpack n'
           let authorString = piAuthor pInfo ++ " " ++ patchDate pInfo
-              doTag randStr = addtag "" (BC.pack authorString)
+              doTag randStr = addtag (BC.pack authorString)
                                (BC.pack $ "darcs-fastconvert merge post: "
                                  ++ randStr)
           maybe (return ()) doTag mergeID
