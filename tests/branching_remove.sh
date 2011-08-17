@@ -11,17 +11,17 @@ darcs-fastconvert create-bridge R
 
 bridge_path=R_bridge
 # Cannot remove master branch...
-not darcs-fastconvert branch remove $bridge_path master
+not darcs-fastconvert branch untrack $bridge_path master
 
 # Cannot remove non-existent branch...
-not darcs-fastconvert branch remove $bridge_path non-existent
+not darcs-fastconvert branch untrack $bridge_path non-existent
 
 darcs get R S
-darcs-fastconvert branch add $bridge_path S
+darcs-fastconvert branch track $bridge_path S
 
 darcs-fastconvert branch list $bridge_path | grep S
 
-darcs-fastconvert branch remove $bridge_path S
+darcs-fastconvert branch untrack $bridge_path S
 
 darcs-fastconvert branch list $bridge_path | not grep S
 
@@ -32,4 +32,4 @@ darcs rec -am 'edit a'
 cd ../
 
 # There should be no changes (this will exit with non-zero if there are)
-darcs-fastconvert sync --bridge-path $bridge_path --repo-type darcs
+darcs-fastconvert sync $bridge_path darcs
