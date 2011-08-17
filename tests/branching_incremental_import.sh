@@ -70,7 +70,7 @@ echo "$DATA" | darcs-fastconvert import --debug --write-marks=marks R
 echo "$DATA2" | darcs-fastconvert import --debug --read-marks=marks --write-marks=marks --create=no R
 
 # We need to keep the marks for master, so the check passes in the next imports
-/bin/grep ^[62] marks > marks.new
+/bin/grep ^:[62] marks > marks.new
 mv marks.new marks
 echo -e '101: 20110614151834-5c01c-91ed99d02b622ea62b1cbc44f21d7be4328416c4.gz invalid_branch\n100: f00 head-branch1' >> marks
 
