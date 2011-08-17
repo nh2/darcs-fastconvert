@@ -6,9 +6,8 @@ rm -rf R R_bridge .darcs_bridge R_git
 
 darcs init --repo R
 cd R
-echo testing > a
-darcs add a
-darcs rec -am 'a'
+echo testing > a && darcs add a && darcs rec -am 'a'
+echo also_testing > b && darcs add b && darcs rec -am 'b'
 cd ..
 
 cwd=$(pwd)

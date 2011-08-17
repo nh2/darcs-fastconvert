@@ -145,6 +145,5 @@ restorePristine prisPath = do
   let darcsDirPath = floatPath "_darcs"
       darcsDir = SubTree `fmap` findTree currentTree darcsDirPath
       combinedTree = T.modifyTree prisTree darcsDirPath darcsDir
-  -- We want to keep our marks/stashed inventories/pristines, but
-  -- the working dir of the pristine.
+  -- We want to keep our marks/pristines, but the working dir of the pristine.
   modify $ \s -> s { tree = combinedTree }

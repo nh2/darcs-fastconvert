@@ -53,23 +53,20 @@ readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
                  return $ foldl merge (IM.empty, M.empty) lines
                `catch` \_ -> return emptyMarks
-  where merge set@(marksSet, ctxSet) line = case BS.split ':' line of
-          [id, hashBranchCtx] ->
-            case BS.split ' ' . BS.dropWhile (== ' ') $ hashBranchCtx of
-              [hash, branch, ctx] ->
-                let mark = read $ BS.unpack id in
+  where merge set@(marksSet, ctxSet) line = case BS.split ' ' line of
+              [id, hash, branch, ctx] ->
+                let mark = read . BS.unpack $ BS.drop 1 id in
                 ( IM.insert mark (hash, branch, ctx) marksSet
                 , M.insert ctx (mark, hash, branch) ctxSet)
               _ -> set -- ignore, although it is maybe not such a great idea...
-          _ -> set
 
 writeMarks :: FilePath -> Marks -> IO ()
 writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
                      BS.writeFile fp marks
   where marks = BS.concat $ map format $ reverse $ listMarks m
         format (k, (h, b, c)) = BS.concat
-          [ BS.pack $ show k, BS.pack ": ", h, BS.pack " ", b, BS.pack " "
-          , c, BS.pack "\n"]
+          [ BS.pack ":", BS.pack $ show k, BS.pack " ", h, BS.pack " ", b
+          , BS.pack " ", c, BS.pack "\n"]
 
 handleCmdMarks :: FilePath -> FilePath -> (Marks -> IO Marks) -> IO ()
 handleCmdMarks inFile outFile act =

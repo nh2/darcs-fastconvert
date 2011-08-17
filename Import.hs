@@ -56,7 +56,7 @@ import Darcs.Patch.Apply ( Apply(..), applyToTree )
 import Darcs.Patch.Depends ( getTagsRight, newsetUnion, findUncommon
                            , merge2FL )
 import Darcs.Patch.FileName ( fp2fn, normPath )
-import Darcs.Patch.Info ( PatchInfo, patchinfo, piAuthor )
+import Darcs.Patch.Info ( PatchInfo, patchinfo, piAuthor, piName )
 import Darcs.Patch.MatchData ( patchMatch )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, n2pia, extractHash, info )
 import Darcs.Patch.Prim ( sortCoalesceFL )
@@ -164,13 +164,20 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -> [(Int, (BC.ByteString, BC.ByteString, BC.ByteString))] -> IO ()
         check NilFL [] = return ()
         check (p:>:ps) ((_, (h, _, _)):ms) = do
-          when (patchHash p /= h) $ die "Marks do not correspond."
+          when (patchHash p /= h) $ die $ unwords
+            [ "Marks do not correspond: expected:", show h, "got"
+            , BC.unpack $ patchHash p, "for patch:", piName (info p) ]
           check ps ms
         check _ _ = die "Patch and mark count do not agree."
 
         masterBName = pb2bn masterBranchName
         isMaster (_, (_, bName, _)) = masterBName == bName
         masterMarks = filter isMaster $ listMarks marks
+        showMark (m, (hash,_,_)) = show m ++ " " ++ BC.unpack hash
+    putStrLn $ "Marks: " ++ unlines (map showMark  masterMarks)
+    putStrLn $ "Patch hashes: "
+      ++ unlines (mapFL (\p -> unwords [ BC.unpack . patchHash $ p
+                                       , piName $ info p]) patches)
     check patches masterMarks
     marksref <- newIORef marks
     branchesref <- newIORef $ listBranches marks

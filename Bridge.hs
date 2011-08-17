@@ -26,7 +26,7 @@ import System.Environment ( getEnvironment )
 import System.Exit ( exitFailure, exitSuccess, ExitCode(ExitSuccess) )
 import System.FilePath ( (</>), takeDirectory, joinPath, splitFileName
                        , dropFileName, takeFileName )
-import System.IO ( hFileSize, withFile, IOMode(ReadMode,WriteMode) )
+import System.IO ( withFile, IOMode(ReadMode,WriteMode) )
 import System.PosixCompat.Files
 import System.Posix.Types ( FileMode )
 import System.Process ( runCommand, runProcess, ProcessHandle, waitForProcess
@@ -284,78 +284,81 @@ syncBridge' firstSync fullBridgePath repoType = do
     copyFile sourceMarks oldSourceMarks
     putStrLn "Doing export."
     exporter converter exportData
-    size <- withFile exportData ReadMode hFileSize
-    when (size > 0) (do
-        putStrLn "Doing import."
-        importer converter exportData
-        putStrLn $ "Copying old targetmarks: " ++ targetMarks
-        -- We need to ensure that the exporting repo knows about the
-        -- mark ids of the just-imported data. We export on the
-        -- just-imported repo, to update the marks file.
-        copyFile targetMarks oldTargetMarks
-        putStrLn "Doing mark update export."
-        -- No /dev/null on windows, so output to temp file.
-        markUpdater converter tempUpdateMarks
-        -- We diff the marks files on both sides, to discover the newly
-        -- added marks. This will allow us to manually update the
-        -- import marks file of the original exporter.
-        putStrLn "Diffing marks."
-        newSourceExportMarks <-
-          diffExportMarks oldSourceMarks sourceMarks
-        newTargetExportMarks <-
-          diffExportMarks oldTargetMarks targetMarks
-        -- We want the source patch ids with the target mark ids.
-        -- We drop the mark, but keep the rest of the line for patchIDs, since
-        -- darcs-marks have a trailing branch name, which we want to keep.
-        let patchIDs = map (unwords . drop 1 . words) newSourceExportMarks
-            markIDs = map (head . words) newTargetExportMarks
-            markFudger m p = alterMark m ++ " " ++ p
-            newEntries = zipWith markFudger markIDs patchIDs
-        putStrLn $ show (length newEntries) ++ " marks to append."
-        -- Prepend new entries to the marks file
-        writeFile tempImportMarks $ unlines newEntries
-        existingImportMarks <- readFile importMarks
-        appendFile tempImportMarks existingImportMarks
-        renameFile tempImportMarks importMarks
-        putStrLn "Import marks updated."
-        mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
-            tempUpdateMarks]
-
-        if firstSync
-          then do
-              putStrLn "Bridge successfully synced."
-              exitSuccess
-          else do
-              putStrLn $ "Changes were pulled in via the bridge,"
-                      ++ " update your local repo."
-              -- non-zero exit-code to signal to the VCS that action is
-              -- required by the user before allowing the push/apply.
-              exitFailure)
-    mapM_ removeFile [oldSourceMarks, exportData]
-    putStrLn "No changes to pull in via the bridge."
-    exitSuccess
+    putStrLn "Doing import."
+    importer converter exportData
+    putStrLn $ "Copying old targetmarks: " ++ targetMarks
+    -- We need to ensure that the exporting repo knows about the
+    -- mark ids of the just-imported data. We export on the
+    -- just-imported repo, to update the marks file.
+    copyFile targetMarks oldTargetMarks
+    putStrLn "Doing mark update export."
+    -- No /dev/null on windows, so output to temp file.
+    markUpdater converter tempUpdateMarks
+    -- We diff the marks files on both sides, to discover the newly
+    -- added marks. This will allow us to manually update the
+    -- import marks file of the original exporter.
+    putStrLn "Diffing marks."
+    newSourceExportMarks <-
+      diffExportMarks oldSourceMarks sourceMarks
+    newTargetExportMarks <-
+      diffExportMarks oldTargetMarks targetMarks
+    -- We want the source patch ids with the target mark ids.
+    -- We drop the mark, but keep the rest of the line for patchIDs, since
+    -- darcs-marks have a trailing branch name, which we want to keep.
+    let patchIDs = map snd newSourceExportMarks
+        markIDs = map fst newTargetExportMarks
+        makeMarkLine m p = ":" ++ show m ++ " " ++ p
+        newEntries = zipWith makeMarkLine markIDs patchIDs
+    putStrLn $ show (length newEntries) ++ " marks to append."
+    (exitMsg, exitRoutine) <- if (null newEntries)
+      then return ("No changes to pull in via the bridge.", exitSuccess)
+      else do
+      -- Prepend new entries to the marks file
+      writeFile tempImportMarks $ unlines newEntries
+      existingImportMarks <- readFile importMarks
+      appendFile tempImportMarks existingImportMarks
+      renameFile tempImportMarks importMarks
+      putStrLn "Import marks updated."
+      if firstSync
+        then return ("Bridge successfully synced.", exitSuccess)
+        else return
+          ("Changes were pulled in via the bridge, update your local repo."
+          , -- non-zero exit-code to signal to the VCS that action is
+            -- required by the user before allowing the push/apply.
+            exitFailure)
+    mapM_ removeFile [oldTargetMarks, oldSourceMarks, exportData,
+        tempUpdateMarks]
+    putStrLn exitMsg
+    exitRoutine
   where
-    -- Darcs and Git marks both contain a colon, but it is situated at opposite
-    -- ends of the mark. Since we are copying the marks from one repo to
-    -- another, we need to convert them.
-    alterMark :: String -> String
-    alterMark (':' : ms) = ms ++ ":"
-    alterMark ms         = ':' : init ms
-
-    diffExportMarks :: FilePath -> FilePath -> IO [String]
+    diffExportMarks :: FilePath -> FilePath -> IO [(Int, String)]
     diffExportMarks old new = do
         oldLines <- getLines old
         newLines <- getLines new
-        return $ diffExportMarks' oldLines newLines
+        let diffedLines = diffExportMarks' oldLines newLines
+        return $ map splitMarkLine diffedLines
+
+    -- New marks may be prepended or appended to the marks file (Git seemingly
+    -- prepends for import and appends for export) so find the set of new
+    -- mark-lines, at either end.
+    diffExportMarks' :: [String] -> [String] -> [String]
+    diffExportMarks' [] new = new
+    diffExportMarks' (x:xs) (y:ys) | x == y = dropLeadingEqual xs ys
+    diffExportMarks' (x:_) ys = takeWhile (/= x) ys
+
+    dropLeadingEqual :: [String] -> [String] -> [String]
+    dropLeadingEqual [] ys = ys
+    dropLeadingEqual _ [] = error "New mark list is shorter!"
+    dropLeadingEqual (x:xs) (y:ys) | x == y = dropLeadingEqual xs ys
+    dropLeadingEqual _ ys = ys
+
+    splitMarkLine :: String -> (Int, String)
+    splitMarkLine line = let ws = words line in
+      (read . drop 1 $ head ws, unwords $ tail ws)
 
     getLines :: FilePath -> IO [String]
     getLines file = fmap lines $ readFile file
 
-    -- New marks are prepended to the marksfile, so take until we hit a
-    -- matching line.
-    diffExportMarks' :: [String] -> [String] -> [String]
-    diffExportMarks' []     = id
-    diffExportMarks' (x:_) = takeWhile (/= x)
 
 putConfig :: FilePath -> BridgeConfig -> IO ()
 putConfig fullBridgePath config = withCurrentDirectory fullBridgePath $
