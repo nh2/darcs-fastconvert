@@ -17,7 +17,8 @@ import qualified Data.ByteString.Char8 as BC
 import Data.ConfigFile ( emptyCP, set, to_string, readfile, get, sections
                        , setshow, has_section, add_section )
 import Data.Data ( Data, Typeable )
-import Data.List ( isPrefixOf, partition )
+import Data.List ( isPrefixOf, partition, sortBy )
+import Data.Ord ( comparing )
 import Data.Either.Utils ( forceEither )
 import System.Directory ( createDirectory, canonicalizePath
                         , setCurrentDirectory, getCurrentDirectory, copyFile
@@ -336,7 +337,7 @@ syncBridge' firstSync fullBridgePath repoType = do
         oldLines <- getLines old
         newLines <- getLines new
         let diffedLines = diffExportMarks' oldLines newLines
-        return $ map splitMarkLine diffedLines
+        return $ sortBy (comparing fst) $ map splitMarkLine diffedLines
 
     -- New marks may be prepended or appended to the marks file (Git seemingly
     -- prepends for import and appends for export) so find the set of new
