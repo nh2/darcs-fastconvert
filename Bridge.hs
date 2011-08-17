@@ -8,7 +8,7 @@ import Marks ( handleCmdMarks )
 import Stash ( topLevelBranchDir, parseBranch )
 import Utils ( die, fp2bn, equalHead )
 
-import Control.Monad ( when, unless, forM, foldM )
+import Control.Monad ( when, unless, forM, foldM, forM_ )
 import Control.Monad.Error ( join )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Error
@@ -211,8 +211,23 @@ createBridge repoPath shouldClone = do
         -- Write out hook files.
         mapM_ writeHookFile [(darcsHookPath, "darcs"), (gitHookPath, "git")]
         -- Update "apply" defaults, for Darcs.
-        withCurrentDirectory darcsPath $
+        withCurrentDirectory darcsPath $ do
             addToPreflist "defaults" "apply prehook ./_darcs/hooks/pre-apply"
+            forM_ darcsCommandsToDisable
+              (\c -> addToPreflist "defaults" (c ++ " disable"))
+
+-- We want to prevent a user running Darcs commands within the bridged repo, to
+-- prevent non-synced patches (git commits must be pulled in first, as enabled
+-- by the pre-hook of apply). We can't use "ALL disable" since we can't do
+-- something like "apply no-disable".
+darcsCommandsToDisable = [ "help", "add", "remove", "move", "replace"
+                         , "revert", "unrevert", "whatsnew", "record"
+                         , "unrecord", "amend-record", "mark-conflicts", "tag"
+                         , "setpref", "diff", "changes", "annotate", "dist"
+                         , "trackdown", "show", "pull", "fetch", "obliterate"
+                         , "rollback", "push", "send", "get", "put"
+                         , "initialize", "optimize", "check", "repair"
+                         , "convert" ]
 
 cloneRepo :: VCSType -> FilePath -> FilePath -> IO ()
 -- This feels like a hack, since getCmd isn't exported.
