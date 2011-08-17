@@ -217,7 +217,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         initBranch :: (ParsedBranchName, Int) -> TreeIO ()
         initBranch (b@(ParsedBranchName bName), m) = do
           doTreeIODebug $ "Setting up branch dir for: " ++ BC.unpack bName
-          pristine <- readFile $ markPristinePath m
+          pristine <-
+            (B.concat . BL.toChunks) `fmap` readFile (markPristinePath m)
           inv <- liftIO $ getInventoryForMark (Just m)
           liftIO $ withCurrentDirectory ".." $ do
             let bDir = topLevelBranchDir repodir b </> "_darcs"
@@ -231,20 +232,19 @@ fastImport' debug repodir inHandle printer repo marks initial = do
 
         readBranchPristinesAndInventory :: forall p1 r1 u1 . (RepoPatch p1) =>
           Repository p1 r1 u1 r1 -> FilePath -> FilePath
-          -> IO (Inventory, BL.ByteString, [String])
+          -> IO (Inventory, BC.ByteString, [String])
         readBranchPristinesAndInventory bRepo branchDir fullRepoPath = do
           ps <- newset2FL `fmap` readRepo bRepo
-          -- Create a complete inventory, since we can't be sure
-          -- that we have any preceeding tags, so we can't just
-          -- read hashed_inventory. On initial import, all
-          -- inventories will be without 'Starting with inventory:'
-          -- and on incremental imports we will create the entire
+          -- Create a complete inventory, since we can't be sure that we have
+          -- any preceeding tags, so we can't just read hashed_inventory. On
+          -- initial import, all inventories will be without 'Starting with
+          -- inventory:' and on incremental imports we will create the entire
           -- inventory, so we will never be missing inventories.
           let inventory = fl2inv ps
-          -- We can read the first line of hashed_inventory to
-          -- obtain the current pristine.
-          pristine <- (head . BL.lines) `fmap`
-            BL.readFile "_darcs/hashed_inventory"
+          -- We can read the first line of hashed_inventory to obtain the
+          -- current pristine.
+          pristine <- ((BC.drop (length "pristine:")) . head . BC.lines) `fmap`
+            BC.readFile "_darcs/hashed_inventory"
           pristines <- filter notdot `fmap`
             getDirectoryContents
               (branchDir </> pristineDir)

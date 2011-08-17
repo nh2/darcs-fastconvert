@@ -104,11 +104,11 @@ markInventoryPath :: Int -> AnchoredPath
 markInventoryPath n = markpath n `appendPath`
   (Name $ BC.pack "inventory")
 
-getTentativePristineContents :: TreeIO (BL.ByteString, Tree IO)
+getTentativePristineContents :: TreeIO (BC.ByteString, Tree IO)
 getTentativePristineContents = do
   tree' <- (liftIO . darcsAddMissingHashes) =<< updateHashes
   let root = encodeBase16 $ treeHash tree'
-  return (BL.fromChunks [BC.concat [BC.pack "pristine:", root]], tree')
+  return (root, tree')
 
 maybeReturn :: (a -> TreeIO ()) -> Maybe a -> TreeIO ()
 maybeReturn = maybe (return ())
@@ -120,15 +120,16 @@ stashPristine mbMark = do
   liftIO $ writeDarcsHashed tree' "_darcs/pristine.hashed"
   stashPristineBS mbMark pristine
 
-stashPristineBS :: Maybe Int -> BL.ByteString -> TreeIO ()
+stashPristineBS :: Maybe Int -> BC.ByteString -> TreeIO ()
 stashPristineBS mbMark pristine = flip maybeReturn mbMark $
-    \mark -> TM.writeFile (markPristinePath mark) pristine
+    \mark -> TM.writeFile (markPristinePath mark) $ BL.fromChunks [pristine]
 
 canRestoreFromMark :: Int -> TreeIO Bool
 canRestoreFromMark m = TM.fileExists $ markPristinePath m
 
-writePristineToPath :: FilePath -> BL.ByteString -> IO ()
-writePristineToPath filePath pristine = BL.writeFile filePath pristine
+writePristineToPath :: FilePath -> BC.ByteString -> IO ()
+writePristineToPath filePath =
+  (BC.writeFile filePath) . BC.append (BC.pack "pristine:")
 
 restorePristineFromMark :: Int -> TreeIO ()
 restorePristineFromMark = restorePristine . markPristinePath
@@ -136,10 +137,9 @@ restorePristineFromMark = restorePristine . markPristinePath
 restorePristine :: AnchoredPath -> TreeIO ()
 restorePristine prisPath = do
   pristine <- TM.readFile prisPath
-  let prefixLen = fromIntegral $ length ("pristine:" :: String)
-      pristineDir = "_darcs/pristine.hashed"
+  let pristineDir = "_darcs/pristine.hashed"
       strictify = B.concat . BL.toChunks
-      hash = decodeBase16 . strictify . BL.drop prefixLen $ pristine
+      hash = decodeBase16 . strictify $ pristine
   currentTree <- gets tree
   prisTree <- liftIO $ readDarcsHashedNosize pristineDir hash >>= T.expand
   let darcsDirPath = floatPath "_darcs"
