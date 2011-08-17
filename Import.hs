@@ -173,11 +173,6 @@ fastImport' debug repodir inHandle printer repo marks initial = do
         masterBName = pb2bn masterBranchName
         isMaster (_, (_, bName, _)) = masterBName == bName
         masterMarks = filter isMaster $ listMarks marks
-        showMark (m, (hash,_,_)) = show m ++ " " ++ BC.unpack hash
-    putStrLn $ "Marks: " ++ unlines (map showMark  masterMarks)
-    putStrLn $ "Patch hashes: "
-      ++ unlines (mapFL (\p -> unwords [ BC.unpack . patchHash $ p
-                                       , piName $ info p]) patches)
     check patches masterMarks
     marksref <- newIORef marks
     branchesref <- newIORef $ listBranches marks
