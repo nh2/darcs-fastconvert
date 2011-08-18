@@ -1,15 +1,17 @@
 module Utils where
 
+import Data.DateTime ( formatDateTime, fromClockTime )
 import Control.Monad.Trans ( MonadIO, liftIO )
 import qualified Data.ByteString.Char8 as BSC
 import System.Exit
 import System.IO ( hPutStrLn, stderr )
 import System.FilePath ( takeFileName )
+import System.Time ( toClockTime )
 
 import Darcs.Patch ( RepoPatch )
 import Darcs.Patch.PatchInfoAnd ( PatchInfoAnd, info )
 import Darcs.Patch.Set ( Origin )
-import Darcs.Patch.Info ( makeFilename )
+import Darcs.Patch.Info ( makeFilename, piDate )
 import Darcs.Witnesses.Eq ( (=\/=), isIsEq )
 import Darcs.Witnesses.Ordered ( FL(..) )
 
@@ -20,6 +22,10 @@ die str = liftIO $ do
 
 patchHash :: (PatchInfoAnd p) a b -> BSC.ByteString
 patchHash p = BSC.pack $ makeFilename (info p)
+
+patchDate :: (PatchInfoAnd p) x y -> String
+patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime .
+  piDate . info
 
 fp2bn :: FilePath -> String
 fp2bn = takeFileName

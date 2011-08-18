@@ -16,7 +16,6 @@ import Control.Exception( finally )
 import Data.List ( sort, intercalate, isPrefixOf, sortBy, (\\), nub )
 import Data.Maybe ( catMaybes, fromJust, isJust )
 import Data.Ord ( comparing )
-import Data.DateTime ( formatDateTime, fromClockTime )
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
@@ -28,7 +27,6 @@ import Prelude hiding ( readFile, pi )
 import Printer ( renderString )
 import System.Directory ( canonicalizePath )
 import System.Random ( randomRIO )
-import System.Time ( toClockTime )
 
 import Darcs.Repository ( Repository, RepoJob(..), readRepo, withRepository )
 import Darcs.Repository.Cache ( HashedDir( HashedPristineDir ) )
@@ -129,10 +127,6 @@ tagName = map cleanup . drop 4 . patchName
 
 patchName :: (PatchInfoAnd p) x y -> String
 patchName = piName . info
-
-patchDate :: (PatchInfoAnd p) x y -> String
-patchDate = formatDateTime "%s +0000" . fromClockTime . toClockTime .
-  piDate . info
 
 patchAuthor :: (PatchInfoAnd p) x y -> String
 patchAuthor p = case span (/='<') author of
