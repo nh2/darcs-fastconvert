@@ -1,4 +1,5 @@
-{-# LANGUAGE NoMonoLocalBinds, DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll #-}
+{-# LANGUAGE NoMonoLocalBinds, DeriveDataTypeable, GADTs, ScopedTypeVariables, ExplicitForAll,
+             TypeFamilies #-}
 module Import( fastImport, fastImportIncremental, RepoFormat(..) ) where
 
 import Utils
@@ -148,8 +149,9 @@ fastImportIncremental debug inHandle printer repodir marks =
             initState = Toplevel ancestor masterBranchName
         fastImport' debug repodir inHandle printer repo marks initState
 
-fastImport' :: forall p r u . (RepoPatch p) => Bool -> FilePath -> Handle ->
-    (String -> IO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
+fastImport' :: forall p r u . (RepoPatch p, ApplyState p ~ Tree, ApplyState (PrimOf p) ~ Tree)
+            => Bool -> FilePath -> Handle
+            -> (String -> IO ()) -> Repository p r u r -> Marks -> State p -> IO Marks
 fastImport' debug repodir inHandle printer repo marks initial = do
     let doDebug x = when debug $ printer $ "Import debug: " ++ x
         doTreeIODebug :: String -> TreeIO ()
@@ -232,7 +234,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
             BL.writeFile (bDir </> "format") $ BL.pack $
               unlines ["hashed", "darcs-2"]
 
-        readBranchPristinesAndInventory :: forall p1 r1 u1 . (RepoPatch p1) =>
+        readBranchPristinesAndInventory :: forall p1 r1 u1 . (RepoPatch p1, ApplyState p1 ~ Tree) =>
           Repository p1 r1 u1 r1 -> FilePath -> FilePath
           -> IO (Inventory, BC.ByteString, [String])
         readBranchPristinesAndInventory bRepo branchDir fullRepoPath = do
