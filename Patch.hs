@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, ScopedTypeVariables, FlexibleContexts #-}
+{-# LANGUAGE GADTs, ScopedTypeVariables, FlexibleContexts, TypeFamilies  #-}
 module Patch (readAndApplyGitEmail) where
 
 import Utils
@@ -20,9 +20,11 @@ import System.Directory ( doesFileExist, doesDirectoryExist )
 import System.IO ( openFile, IOMode( ReadMode ), Handle )
 import System.FilePath ( splitPath, joinPath, takeDirectory, isPathSeparator )
 import SHA1 ( sha1PS )
+import Storage.Hashed.Tree ( Tree )
 
 import Darcs.Flags( Compression(..) )
 import Darcs.Patch ( RepoPatch, fromPrims, infopatch, apply, invert )
+import Darcs.Patch.Apply ( ApplyState )
 import Darcs.Patch.Info ( patchinfo, PatchInfo )
 import Darcs.Patch.PatchInfoAnd ( n2pia )
 import Darcs.Patch.Show ( showPatch )
@@ -99,8 +101,8 @@ applyGitPatch shouldPrompt (GitPatch author date message changes) = do
   info <- patchinfo dateStr name (BC.unpack author) descr
   withRepoLock [] $ RepoJob $ applyChanges shouldPrompt info changes
 
-applyChanges :: forall p r u . (RepoPatch p) => Bool -> PatchInfo -> [Change]
-  -> Repository p r u r -> IO ()
+applyChanges :: forall p r u . (RepoPatch p, ApplyState (PrimOf p) ~ Tree, ApplyState p ~ Tree)
+             => Bool -> PatchInfo -> [Change] -> Repository p r u r -> IO ()
 applyChanges shouldPrompt info changes repo = do
   (Sealed ps) <- unFreeLeft `fmap` changesToPrims changes
   (prims :: FL p r x) <- return . fromPrims . sortCoalesceFL $ ps
