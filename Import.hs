@@ -696,6 +696,8 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           finalizeRepositoryChanges bRepo
           createPristineDirectoryTree bRepo "."
           cleanRepository bRepo
+          return undefined -- XXX hack to avoid a problem with escaping type variable
+
     -- Must clean main repo after branches, else we'll have missing pristines.
     doDebug "Finalizing and cleaning master repo."
     createPristineDirectoryTree repo "."
