@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, OverloadedStrings, Rank2Types, ScopedTypeVariables #-}
+{-# LANGUAGE GADTs, OverloadedStrings, Rank2Types, ScopedTypeVariables, TypeFamilies  #-}
 module Export( fastExport ) where
 
 import Marks
@@ -37,6 +37,7 @@ import Darcs.Repository.InternalTypes ( extractCache )
 import Darcs.Patch ( effect, listTouchedFiles, apply, RepoPatch, showPatch
                    , getdeps )
 import Darcs.Patch.Commute ( commuteFL )
+import Darcs.Patch.Apply ( ApplyState )
 import Darcs.Patch.Effect ( Effect )
 import Darcs.Patch.Info ( isTag, PatchInfo, piAuthor, piName, piLog, piDate
                         , makePatchname )
@@ -52,7 +53,7 @@ import Darcs.Utils ( withCurrentDirectory )
 
 import Storage.Hashed.Darcs
 import Storage.Hashed.Monad hiding ( createDirectory, exists )
-import Storage.Hashed.Tree( findTree, emptyTree, listImmediate, findTree )
+import Storage.Hashed.Tree( findTree, emptyTree, listImmediate, findTree, Tree )
 import Storage.Hashed.AnchoredPath( anchorPath, appendPath, floatPath
                                   , AnchoredPath(..) )
 
@@ -253,7 +254,8 @@ restoreBranch bFrom = do
   -- commit, not the globally previous commit.
   modify (\s -> s {lastExportedMark = bFrom})
 
-dumpBranch :: forall p . (RepoPatch p) => Branch p -> [Branch p] -> ExportM ()
+dumpBranch :: forall p . (RepoPatch p, ApplyState p ~ Tree)
+           => Branch p -> [Branch p] -> ExportM ()
 dumpBranch (Branch bFrom bName _ _ (Sealed2 NilFL)) bs = do
     -- Reset, so branch heads are up-to-date at the end of the export.
     reset (Just bFrom) bName
@@ -540,7 +542,7 @@ fl2Ctx = foldlFL hashPatch
 stashPristineAtMark :: Int -> ExportM ()
 stashPristineAtMark mark = lift $ stashPristine (Just mark)
 
-go :: (RepoPatch p) => [Branch p] -> ExportM ()
+go :: (RepoPatch p, ApplyState p ~ Tree) => [Branch p] -> ExportM ()
 go [] = return ()
 go branches = do
   stashPristineAtMark 0
@@ -554,7 +556,7 @@ fastExport doPrint repodir bs marks = do
   withCurrentDirectory repodir $ withRepository [] $ RepoJob $ \repo ->
     fastExport' repo doPrint branchPaths marks
 
-fastExport' :: forall p r u . (RepoPatch p) => Repository p r u r
+fastExport' :: forall p r u . (RepoPatch p, ApplyState p ~ Tree) => Repository p r u r
   -> (BLU.ByteString -> ExportM ()) -> [FilePath] -> Marks -> IO Marks
 fastExport' repo doPrint bs marks = do
   patchset <- readRepo repo
