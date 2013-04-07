@@ -6,7 +6,7 @@ import Utils
 import Marks
 import Stash
 
-import Control.Exception
+import Control.Exception as E
 import Codec.Compression.GZip ( decompress )
 import qualified Data.Attoparsec.Char8 as A
 import Data.Attoparsec.Char8( (<?>) )
@@ -212,7 +212,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           liftIO $ writePristineToPath "_darcs/tentative_pristine" pristine
           inv <- liftIO $
             (getLastBranchMark masterBranchName >>= getInventoryForMark . Just)
-              `catch` \(_ :: SomeException) -> return []
+              `E.catch` \(_ :: SomeException) -> return []
           liftIO $
             writeInventoryToPath "_darcs/tentative_hashed_inventory" inv
           -- dump the right tree, without _darcs
@@ -325,13 +325,13 @@ fastImport' debug repodir inHandle printer repo marks initial = do
               branchDir <- liftIO $
                 canonicalizePath
                  (".." </> topLevelBranchDir repodir (ParsedBranchName branch))
-                `catch` \(_ :: SomeException) -> die $ "Non-existent branch: " ++ BC.unpack branch
+                `E.catch` \(_ :: SomeException) -> die $ "Non-existent branch: " ++ BC.unpack branch
               fullRepoPath <- liftIO $ canonicalizePath "."
               (inv, pris) <- liftIO $ withTempDir "import-temporary" $
                 \tempdir -> do
                   commandCommand DCG.get [Quiet,
                     OnePattern (patchMatch $ "hash " ++ BC.unpack hash)]
-                    [branchDir, "repo"] `catch` \(_ :: SomeException) -> die . unwords $
+                    [branchDir, "repo"] `E.catch` \(_ :: SomeException) -> die . unwords $
                     [ "Could not clone branch ", BC.unpack branch, "; either"
                     , branchDir
                     , "is not a valid repo or the repo doesn't contain a patch"
@@ -445,7 +445,7 @@ fastImport' debug repodir inHandle printer repo marks initial = do
           -- (and the readinv code expects them in that order).
           (readRepoFromInventoryList (extractCache repo)
             (Nothing, reverse inv)
-          `catch`
+          `E.catch`
           \(_ :: SomeException) -> die $ "Failed to read repo from inventory: " ++ show inv)
 
         mergeIfNecessary :: Marked -> Merges -> AuthorInfo ->

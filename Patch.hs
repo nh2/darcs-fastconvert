@@ -3,7 +3,7 @@ module Patch (readAndApplyGitEmail) where
 
 import Utils
 
-import Control.Exception 
+import Control.Exception as E
 import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad ( unless, when, forM_ )
 import Control.Monad.Trans ( liftIO )
@@ -118,7 +118,7 @@ applyChanges shouldPrompt info changes repo = do
     applyAllOrNone' :: RL (PrimOf p) r y -> FL (PrimOf p) y x -> IO ()
     applyAllOrNone' _ NilFL = return ()
     applyAllOrNone' applied (p :>: ps) = do
-      apply p `catch` \(_ :: SomeException) -> do
+      apply p `E.catch` \(_ :: SomeException) -> do
         putStrLn $ "Rolling back after prim failed to apply: "
           ++ renderString (showPatch p)
         apply $ invert applied
