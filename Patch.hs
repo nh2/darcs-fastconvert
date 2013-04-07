@@ -7,7 +7,7 @@ import Control.Applicative ( Alternative, (<|>) )
 import Control.Monad ( unless, when, forM_ )
 import Control.Monad.Trans ( liftIO )
 import qualified Data.Attoparsec.Char8 as A
-import Data.Attoparsec.Combinator( many )
+import Data.Attoparsec.Combinator( many' )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
@@ -186,7 +186,7 @@ missingFileHash = GitHash $ replicate 40 '0'
 emptyFileHash = GitHash "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
 parseGitEmail :: Handle -> IO [GitPatch]
-parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
+parseGitEmail h = go (A.parse $ many' p_gitPatch) BC.empty h where
   lex :: A.Parser b -> A.Parser b
   lex p = p >>= \x -> A.skipSpace >> return x
 
@@ -207,7 +207,7 @@ parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
     (msg : description) <- p_commitMsg
     let commitLog = removePatchHeader msg : description
     _ <- specialLineDelimited BC.empty id -- skip the diff summary
-    diffs <- many p_diff
+    diffs <- many' p_diff
     _ <- p_endMarker
     return $ GitPatch author date commitLog diffs
 
@@ -276,7 +276,7 @@ parseGitEmail h = go (A.parse $ many p_gitPatch) BC.empty h where
 
   p_unifiedDiff = do
     p_unifiedFiles
-    many p_unifiedHunk
+    many' p_unifiedHunk
 
   p_unifiedHunk = do
     lexString "@@ -"

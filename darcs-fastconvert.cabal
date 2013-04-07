@@ -65,29 +65,30 @@ Executable darcs-fastconvert
   Main-is: main.hs
   ghc-options: -Wall -fno-warn-unused-do-bind -threaded
 
-  build-depends: darcs >= 2.7 && <= 2.8
+  default-language: Haskell2010
 
   -- Packages needed in order to build this package.
-  Build-depends: hashed-storage >= 0.5.3 && < 0.6,
-                 cmdlib >= 0.3.1 && < 0.4,
-                 base >= 4 && < 5,
-                 attoparsec >= 0.8 && < 0.10,
-                 datetime >= 0.2.1 && < 0.3,
-                 old-time == 1.0.*,
-                 filepath >= 1.0 && < 1.3,
-                 bytestring >= 0.9 && < 0.10,
-                 mtl >= 2.0 && < 2.1,
-                 directory >= 1.0 && < 1.2,
-                 utf8-string >= 0.3 && < 0.4,
-                 containers >= 0.1 && < 0.5,
-                 process >= 1.0 && < 1.1,
-                 ConfigFile >= 1.0 && < 1.1,
-                 MissingH >= 1.0 && < 1.2,
-                 unix-compat >= 0.1 && < 0.3,
-                 transformers >= 0.2 && < 0.3,
-                 base64-bytestring >= 0.1 && < 0.2,
-                 zlib >= 0.5 && < 0.6,
-                 random >= 1.0 && < 1.1
+  build-depends: darcs >= 2.7,
+                 hashed-storage >= 0.5.3,
+                 cmdlib >= 0.3.1,
+                 base >= 4,
+                 attoparsec >= 0.8,
+                 datetime >= 0.2.1,
+                 old-time >= 1.1,
+                 filepath >= 1.0,
+                 bytestring >= 0.9,
+                 mtl >= 2.0,
+                 directory >= 1.0,
+                 utf8-string >= 0.3,
+                 containers >= 0.1,
+                 process >= 1.0,
+                 ConfigFile >= 1.0,
+                 MissingH >= 1.0,
+                 unix-compat >= 0.1,
+                 transformers >= 0.2,
+                 base64-bytestring >= 0.1,
+                 zlib >= 0.5,
+                 random >= 1.0
 
   -- Modules not exported by this package.
   Other-modules: Export Import Marks Utils Bridge Stash Patch
@@ -98,13 +99,15 @@ Executable darcs-fastconvert
 Test-Suite test
   type: exitcode-stdio-1.0
 
-  build-tools: ghc >= 6.10 && < 7.2
+  build-tools: ghc >= 6.10
 
   main-is: test.hs
 
-  build-depends:   base          < 5,
-                   filepath     >= 1.1.0.0 && < 1.3.0.0,
-                   cmdlib       >= 0.2.1 && < 0.4,
-                   shellish     >= 0.1.3 && < 0.2,
-                   test-framework             >= 0.2.2,
-                   bytestring >= 0.9 && < 0.10
+  default-language: Haskell2010
+
+  build-depends:   base              < 5,
+                   filepath          >= 1.1.0.0,
+                   cmdlib            >= 0.2.1,
+                   shellish          >= 0.1.3,
+                   test-framework    >= 0.2.2,
+                   bytestring        >= 0.9

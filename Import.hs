@@ -750,7 +750,7 @@ parseObject inHandle = next mbObject
                       committer <- p_author "committer"
                       message <- p_data
                       from <- optional p_from
-                      merges <- A.many p_merge
+                      merges <- A.many' p_merge
                       return $ Commit branch mark committer message from merges
 
         p_tag = do lexString "tag" >> line -- FIXME we ignore branch for now

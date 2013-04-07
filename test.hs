@@ -28,7 +28,7 @@ instance TestResultlike Running Result where
 data ShellTest = ShellTest { testfile :: FilePath
                            , testdir  :: Maybe FilePath
                            , _darcspath :: FilePath
-                           }
+                           } deriving (Typeable)
 
 runtest' :: ShellTest -> FilePath -> ShIO Result
 runtest' (ShellTest _ _ dp) srcdir =
