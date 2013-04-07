@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, ScopedTypeVariables #-}
 module Bridge( createBridge, syncBridge, VCSType(..), listBranches, trackBranch
              , untrackBranch, RepoBranch(..) ) where
 
@@ -8,6 +8,7 @@ import Marks ( handleCmdMarks )
 import Stash ( topLevelBranchDir, parseBranch )
 import Utils ( die, fp2bn, equalHead )
 
+import Control.Exception 
 import Control.Monad ( when, unless, forM, foldM, forM_ )
 import Control.Monad.Error ( join )
 import Control.Monad.IO.Class
@@ -91,7 +92,7 @@ gitImportMarksName = "git_import_marks"
 -- .darcs_bridge will be accepted, canonicalized and returned.
 findBridgeDir :: FilePath -> IO (Maybe FilePath)
 findBridgeDir dir = do
-  fullPath <- canonicalizePath dir `catch` \_ -> die $ "Invalid path: " ++ dir
+  fullPath <- canonicalizePath dir `catch` \(_ :: SomeException) -> die $ "Invalid path: " ++ dir
   if takeFileName fullPath == bridgeDirName
     then return $ Just fullPath
     else do

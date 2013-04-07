@@ -1,5 +1,7 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 module Marks where
 
+import Control.Exception
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.ByteString.Char8 as BS
@@ -52,7 +54,7 @@ findMarkForCtx s m = (\(mark,_,_) -> mark) `fmap` getContext m (BS.pack s)
 readMarks :: FilePath -> IO Marks
 readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
                  return $ foldl merge (IM.empty, M.empty) lines
-               `catch` \_ -> return emptyMarks
+               `catch` \(_ :: SomeException) -> return emptyMarks
   where merge set@(marksSet, ctxSet) line = case BS.split ' ' line of
               [id, hash, branch, ctx] ->
                 let mark = read . BS.unpack $ BS.drop 1 id in
@@ -61,7 +63,7 @@ readMarks p = do lines <- BS.split '\n' `fmap` BS.readFile p
               _ -> set -- ignore, although it is maybe not such a great idea...
 
 writeMarks :: FilePath -> Marks -> IO ()
-writeMarks fp m = do removeFile fp `catch` \_ -> return () -- unlink
+writeMarks fp m = do removeFile fp `catch` \(_ :: SomeException) -> return () -- unlink
                      BS.writeFile fp marks
   where marks = BS.concat $ map format $ reverse $ listMarks m
         format (k, (h, b, c)) = BS.concat
